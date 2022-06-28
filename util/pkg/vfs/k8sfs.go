@@ -34,8 +34,10 @@ type KubernetesPath struct {
 	key        string
 }
 
-var _ Path = &KubernetesPath{}
-var _ HasHash = &KubernetesPath{}
+var (
+	_ Path    = &KubernetesPath{}
+	_ HasHash = &KubernetesPath{}
+)
 
 func newKubernetesPath(k8sContext *KubernetesContext, host string, key string) *KubernetesPath {
 	host = strings.TrimSuffix(host, "/")
@@ -66,6 +68,10 @@ func (p *KubernetesPath) String() string {
 
 func (p *KubernetesPath) Remove() error {
 	return fmt.Errorf("KubernetesPath::Remove not supported")
+}
+
+func (p *KubernetesPath) RemoveAllVersions() error {
+	return p.Remove()
 }
 
 func (p *KubernetesPath) Join(relativePath ...string) Path {

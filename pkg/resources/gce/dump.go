@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"sync"
 
-	compute "google.golang.org/api/compute/v0.beta"
-	"k8s.io/klog"
+	compute "google.golang.org/api/compute/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/resources"
 	gce "k8s.io/kops/upup/pkg/fi/cloudup/gce"
 )
@@ -74,7 +74,7 @@ func DumpManagedInstance(op *resources.DumpOperation, r *resources.Resource) err
 	op.Dump.Instances = append(op.Dump.Instances, i)
 
 	// Unclear if we should include the instance details in the dump - assume YAGNI until someone needs it
-	//dump.Resources = append(dump.Resources, instanceDetails)
+	// dump.Resources = append(dump.Resources, instanceDetails)
 
 	return nil
 }
@@ -102,17 +102,14 @@ func (s *dumpState) getInstances(ctx context.Context, zone string) (map[string]*
 		return s.instances[zone], nil
 	}
 
-	instances := make(map[string]*compute.Instance)
-	err := s.cloud.Compute().Instances.List(s.cloud.Project(), zone).Pages(ctx, func(page *compute.InstanceList) error {
-		for _, i := range page.Items {
-			instances[i.Name] = i
-		}
-		return nil
-	})
+	l, err := s.cloud.Compute().Instances().List(ctx, s.cloud.Project(), zone)
 	if err != nil {
 		return nil, err
 	}
-
+	instances := make(map[string]*compute.Instance)
+	for _, i := range l {
+		instances[i.Name] = i
+	}
 	s.instances[zone] = instances
 	return instances, nil
 }

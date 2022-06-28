@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
@@ -44,10 +44,6 @@ var _ fi.HasName = &Archive{}
 
 func (e *Chattr) GetName() *string {
 	return fi.String("Chattr-" + e.File)
-}
-
-func (e *Chattr) SetName(name string) {
-	klog.Fatalf("SetName not supported for Chattr task")
 }
 
 var _ fi.HasDependencies = &Chattr{}

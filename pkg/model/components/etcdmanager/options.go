@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/model/components"
@@ -39,30 +39,14 @@ var _ loader.OptionsBuilder = &EtcdManagerOptionsBuilder{}
 func (b *EtcdManagerOptionsBuilder) BuildOptions(o interface{}) error {
 	clusterSpec := o.(*kops.ClusterSpec)
 
-	for _, etcdCluster := range clusterSpec.EtcdClusters {
-		if etcdCluster.Provider != kops.EtcdProviderTypeManager {
-			continue
-		}
-
-		if etcdCluster.Manager == nil {
-			etcdCluster.Manager = &kops.EtcdManagerSpec{}
-		}
-
+	for i := range clusterSpec.EtcdClusters {
+		etcdCluster := &clusterSpec.EtcdClusters[i]
 		if etcdCluster.Backups == nil {
 			etcdCluster.Backups = &kops.EtcdBackupSpec{}
 		}
 		if etcdCluster.Backups.BackupStore == "" {
 			base := clusterSpec.ConfigBase
 			etcdCluster.Backups.BackupStore = urls.Join(base, "backups", "etcd", etcdCluster.Name)
-		}
-
-		if etcdCluster.Version == "" {
-			if b.IsKubernetesGTE("1.11") {
-				etcdCluster.Version = "3.2.18"
-			} else {
-				// Preserve existing default etcd version
-				etcdCluster.Version = "2.2.1"
-			}
 		}
 
 		if !etcdVersionIsSupported(etcdCluster.Version) {
@@ -72,14 +56,13 @@ func (b *EtcdManagerOptionsBuilder) BuildOptions(o interface{}) error {
 				klog.Warningf("unsupported etcd version %q detected; please update etcd version.  Use export KOPS_FEATURE_FLAGS=SkipEtcdVersionCheck to override this check", etcdCluster.Version)
 				return fmt.Errorf("etcd version %q is not supported with etcd-manager, please specify a supported version or remove the value to use the default version.  Supported versions: %s", etcdCluster.Version, strings.Join(supportedEtcdVersions, ", "))
 			}
-
 		}
 	}
 
 	return nil
 }
 
-var supportedEtcdVersions = []string{"2.2.1", "3.1.12", "3.2.18", "3.2.24", "3.3.10", "3.3.13"}
+var supportedEtcdVersions = []string{"3.1.12", "3.2.18", "3.2.24", "3.3.10", "3.3.13", "3.3.17", "3.4.3", "3.4.13", "3.5.0", "3.5.1", "3.5.3", "3.5.4"}
 
 func etcdVersionIsSupported(version string) bool {
 	version = strings.TrimPrefix(version, "v")

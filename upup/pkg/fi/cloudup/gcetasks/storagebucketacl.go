@@ -20,17 +20,17 @@ import (
 	"fmt"
 
 	"google.golang.org/api/storage/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
 // StorageBucketAcl represents an ACL rule on a google cloud storage bucket
-//go:generate fitask -type=StorageBucketAcl
+// +kops:fitask
 type StorageBucketAcl struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	Bucket *string
 	Entity *string
@@ -117,13 +117,13 @@ func (_ *StorageBucketAcl) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Storage
 
 // terraformStorageBucketAcl is the model for a terraform google_storage_bucket_acl rule
 type terraformStorageBucketAcl struct {
-	Bucket     string   `json:"bucket,omitempty"`
-	RoleEntity []string `json:"role_entity,omitempty"`
+	Bucket     string   `cty:"bucket"`
+	RoleEntity []string `cty:"role_entity"`
 }
 
 func (_ *StorageBucketAcl) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *StorageBucketAcl) error {
 	var roleEntities []string
-	roleEntities = append(roleEntities, fi.StringValue(e.Role)+":"+fi.StringValue(e.Name))
+	roleEntities = append(roleEntities, fi.StringValue(e.Role)+":"+fi.StringValue(e.Entity))
 	tf := &terraformStorageBucketAcl{
 		Bucket:     fi.StringValue(e.Bucket),
 		RoleEntity: roleEntities,

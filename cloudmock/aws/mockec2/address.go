@@ -24,7 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) AllocateAddressRequest(*ec2.AllocateAddressInput) (*request.Request, *ec2.AllocateAddressOutput) {
@@ -50,15 +50,23 @@ func (m *MockEC2) AllocateAddressWithId(request *ec2.AllocateAddressInput, id st
 		binary.BigEndian.PutUint32(publicIP, v)
 	}
 
+	tags := tagSpecificationsToTags(request.TagSpecifications, ec2.ResourceTypeElasticIp)
 	address := &ec2.Address{
 		AllocationId: s(id),
 		Domain:       s("vpc"),
 		PublicIp:     s(publicIP.String()),
+		Tags:         tags,
 	}
+	if request.Address != nil {
+		address.PublicIp = request.Address
+	}
+
 	if m.Addresses == nil {
 		m.Addresses = make(map[string]*ec2.Address)
 	}
 	m.Addresses[id] = address
+	m.addTags(id, tags...)
+
 	response := &ec2.AllocateAddressOutput{
 		AllocationId: address.AllocationId,
 		Domain:       address.Domain,
@@ -151,6 +159,7 @@ func (m *MockEC2) DescribeAddresses(request *ec2.DescribeAddressesInput) (*ec2.D
 		}
 
 		copy := *address
+		copy.Tags = m.getTags(ec2.ResourceTypeElasticIp, *address.AllocationId)
 		addresses = append(addresses, &copy)
 	}
 
@@ -164,9 +173,11 @@ func (m *MockEC2) DescribeAddresses(request *ec2.DescribeAddressesInput) (*ec2.D
 func (m *MockEC2) ReleaseAddressRequest(*ec2.ReleaseAddressInput) (*request.Request, *ec2.ReleaseAddressOutput) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) ReleaseAddressWithContext(aws.Context, *ec2.ReleaseAddressInput, ...request.Option) (*ec2.ReleaseAddressOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) ReleaseAddress(request *ec2.ReleaseAddressInput) (*ec2.ReleaseAddressOutput, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()

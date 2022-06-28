@@ -58,16 +58,12 @@ func GenMarkdownCustom(cmd *cobra.Command, w io.Writer, linkHandler func(string)
 	buf := new(bytes.Buffer)
 	name := cmd.CommandPath()
 
-	short := cmd.Short
-	long := cmd.Long
-	if len(long) == 0 {
-		long = short
-	}
-
 	buf.WriteString("## " + name + "\n\n")
-	buf.WriteString(short + "\n\n")
-	buf.WriteString("### Synopsis\n\n")
-	buf.WriteString(long + "\n\n")
+	buf.WriteString(cmd.Short + "\n\n")
+	if len(cmd.Long) > 0 {
+		buf.WriteString("### Synopsis\n\n")
+		buf.WriteString(cmd.Long + "\n\n")
+	}
 
 	if cmd.Runnable() {
 		buf.WriteString(fmt.Sprintf("```\n%s\n```\n\n", cmd.UseLine()))
@@ -87,7 +83,7 @@ func GenMarkdownCustom(cmd *cobra.Command, w io.Writer, linkHandler func(string)
 			parent := cmd.Parent()
 			pname := parent.CommandPath()
 			link := pname + ".md"
-			link = strings.Replace(link, " ", "_", -1)
+			link = strings.ReplaceAll(link, " ", "_")
 			buf.WriteString(fmt.Sprintf("* [%s](%s)\t - %s\n", pname, linkHandler(link), parent.Short))
 			cmd.VisitParents(func(c *cobra.Command) {
 				if c.DisableAutoGenTag {
@@ -105,7 +101,7 @@ func GenMarkdownCustom(cmd *cobra.Command, w io.Writer, linkHandler func(string)
 			}
 			cname := name + " " + child.Name()
 			link := cname + ".md"
-			link = strings.Replace(link, " ", "_", -1)
+			link = strings.ReplaceAll(link, " ", "_")
 			buf.WriteString(fmt.Sprintf("* [%s](%s)\t - %s\n", cname, linkHandler(link), child.Short))
 		}
 		buf.WriteString("\n")
@@ -141,7 +137,7 @@ func GenMarkdownTreeCustom(cmd *cobra.Command, dir string, filePrepender, linkHa
 		}
 	}
 
-	basename := strings.Replace(cmd.CommandPath(), " ", "_", -1) + ".md"
+	basename := strings.ReplaceAll(cmd.CommandPath(), " ", "_") + ".md"
 	filename := filepath.Join(dir, basename)
 	f, err := os.Create(filename)
 	if err != nil {

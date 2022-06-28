@@ -23,18 +23,28 @@ import (
 
 	sg "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
 	sgr "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/rules"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=SecurityGroup
+// +kops:fitask
 type SecurityGroup struct {
 	ID               *string
 	Name             *string
 	Description      *string
 	RemoveExtraRules []string
-	Lifecycle        *fi.Lifecycle
+	RemoveGroup      bool
+	Lifecycle        fi.Lifecycle
+}
+
+// SecurityGroupsByID implements sort.Interface based on the ID field.
+type SecurityGroupsByID []*SecurityGroup
+
+func (a SecurityGroupsByID) Len() int      { return len(a) }
+func (a SecurityGroupsByID) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a SecurityGroupsByID) Less(i, j int) bool {
+	return fi.StringValue(a[i].ID) < fi.StringValue(a[j].ID)
 }
 
 var _ fi.CompareWithID = &SecurityGroup{}
@@ -45,6 +55,10 @@ func (s *SecurityGroup) CompareWithID() *string {
 
 func (s *SecurityGroup) Find(context *fi.Context) (*SecurityGroup, error) {
 	cloud := context.Cloud.(openstack.OpenstackCloud)
+	// avoid creating new group if it has removegroup flag
+	if s.RemoveGroup {
+		return s, nil
+	}
 	return getSecurityGroupByName(s, cloud)
 }
 
@@ -70,6 +84,7 @@ func getSecurityGroupByName(s *SecurityGroup, cloud openstack.OpenstackCloud) (*
 		Lifecycle:   s.Lifecycle,
 	}
 	actual.RemoveExtraRules = s.RemoveExtraRules
+	actual.RemoveGroup = s.RemoveGroup
 	s.ID = actual.ID
 	return actual, nil
 }
@@ -119,8 +134,21 @@ func (_ *SecurityGroup) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, c
 func (s *SecurityGroup) FindDeletions(c *fi.Context) ([]fi.Deletion, error) {
 	var removals []fi.Deletion
 
-	if len(s.RemoveExtraRules) == 0 {
+	if len(s.RemoveExtraRules) == 0 && !s.RemoveGroup {
 		return nil, nil
+	}
+
+	cloud := c.Cloud.(openstack.OpenstackCloud)
+	if s.RemoveGroup {
+		sg, err := getSecurityGroupByName(s, cloud)
+		if err != nil {
+			return nil, err
+		}
+		if sg != nil {
+			removals = append(removals, &deleteSecurityGroup{
+				securityGroup: sg,
+			})
+		}
 	}
 
 	var rules []RemovalRule
@@ -132,7 +160,6 @@ func (s *SecurityGroup) FindDeletions(c *fi.Context) ([]fi.Deletion, error) {
 		rules = append(rules, rule)
 	}
 
-	cloud := c.Cloud.(openstack.OpenstackCloud)
 	sg, err := getSecurityGroupByName(s, cloud)
 	if err != nil {
 		return nil, err
@@ -201,6 +228,35 @@ func matches(t *SecurityGroupRule, perm sgr.SecGroupRule) bool {
 	}
 
 	return true
+}
+
+type deleteSecurityGroup struct {
+	securityGroup *SecurityGroup
+}
+
+var _ fi.Deletion = &deleteSecurityGroup{}
+
+func (d *deleteSecurityGroup) Delete(t fi.Target) error {
+	klog.V(2).Infof("deleting security group: %v", fi.DebugAsJsonString(d.securityGroup.Name))
+
+	os, ok := t.(*openstack.OpenstackAPITarget)
+	if !ok {
+		return fmt.Errorf("unexpected target type for deletion: %T", t)
+	}
+	err := os.Cloud.DeleteSecurityGroup(fi.StringValue(d.securityGroup.ID))
+	if err != nil {
+		return fmt.Errorf("error revoking SecurityGroup: %v", err)
+	}
+	return nil
+}
+
+func (d *deleteSecurityGroup) TaskName() string {
+	return "SecurityGroup"
+}
+
+func (d *deleteSecurityGroup) Item() string {
+	s := fmt.Sprintf("securitygroup=%s", fi.StringValue(d.securityGroup.Name))
+	return s
 }
 
 type deleteSecurityGroupRule struct {

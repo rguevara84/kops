@@ -1,0 +1,376 @@
+{{ with .ClusterAutoscaler }}
+# Sourced from https://github.com/kubernetes/autoscaler/
+---
+# Source: cluster-autoscaler/templates/pdb.yaml
+{{ if IsKubernetesGTE "1.23" }}
+apiVersion: policy/v1
+{{ else }}
+apiVersion: policy/v1beta1
+{{ end }}
+kind: PodDisruptionBudget
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: cluster-autoscaler
+  maxUnavailable: 1
+---
+# Source: cluster-autoscaler/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: kube-system
+automountServiceAccountToken: true
+---
+# Source: cluster-autoscaler/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - events
+      - endpoints
+    verbs:
+      - create
+      - patch
+  - apiGroups:
+    - ""
+    resources:
+    - pods/eviction
+    verbs:
+    - create
+  - apiGroups:
+      - ""
+    resources:
+      - pods/status
+    verbs:
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - endpoints
+    resourceNames:
+      - cluster-autoscaler
+    verbs:
+      - get
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+    - watch
+    - list
+    - get
+    - update
+  - apiGroups:
+    - ""
+    resources:
+      - namespaces
+      - pods
+      - services
+      - replicationcontrollers
+      - persistentvolumeclaims
+      - persistentvolumes
+    verbs:
+      - watch
+      - list
+      - get
+  - apiGroups:
+    - batch
+    resources:
+      - jobs
+      - cronjobs
+    verbs:
+      - watch
+      - list
+      - get
+  - apiGroups:
+    - batch
+    - extensions
+    resources:
+    - jobs
+    verbs:
+    - get
+    - list
+    - patch
+    - watch
+  - apiGroups:
+      - extensions
+    resources:
+      - replicasets
+      - daemonsets
+    verbs:
+      - watch
+      - list
+      - get
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - watch
+      - list
+  - apiGroups:
+    - apps
+    resources:
+    - daemonsets
+    - replicasets
+    - statefulsets
+    verbs:
+    - watch
+    - list
+    - get
+  - apiGroups:
+    - storage.k8s.io
+    resources:
+    - storageclasses
+    - csinodes
+    - csidrivers
+    - csistoragecapacities
+    verbs:
+    - watch
+    - list
+    - get
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+    - coordination.k8s.io
+    resources:
+    - leases
+    verbs:
+    - create
+  - apiGroups:
+    - coordination.k8s.io
+    resourceNames:
+    - cluster-autoscaler
+    resources:
+    - leases
+    verbs:
+    - get
+    - update
+---
+# Source: cluster-autoscaler/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: kube-system
+---
+# Source: cluster-autoscaler/templates/role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: kube-system
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - cluster-autoscaler-status
+    verbs:
+      - delete
+      - get
+      - update
+---
+# Source: cluster-autoscaler/templates/rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cluster-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: kube-system
+---
+# Source: cluster-autoscaler/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: kube-system
+spec:
+  ports:
+    - port: 8085
+      protocol: TCP
+      targetPort: 8085
+      name: http
+  selector:
+    app.kubernetes.io/name: "cluster-autoscaler"
+  type: "ClusterIP"
+---
+# Source: cluster-autoscaler/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/name: "cluster-autoscaler"
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: kube-system
+spec:
+  replicas: {{ ControlPlaneControllerReplicas true }}
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  template:
+    metadata:
+      annotations:
+        prometheus.io/port: "8085"
+        prometheus.io/scrape: "true"
+        {{- range $key, $value := .PodAnnotations }}
+        {{ $key }}: "{{ $value }}"
+        {{- end }}
+      labels:
+        app: cluster-autoscaler
+        k8s-addon: cluster-autoscaler.addons.k8s.io
+        k8s-app: cluster-autoscaler
+        app.kubernetes.io/name: "cluster-autoscaler"
+    spec:
+      nodeSelector: null
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            {{ if not UseServiceAccountExternalPermissions }}
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+            - matchExpressions:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+            {{ else }}
+            - matchExpressions:
+              - key: node-role.kubernetes.io/spot-worker
+                operator: DoesNotExist
+            {{ end }}
+      priorityClassName: "system-cluster-critical"
+      dnsPolicy: "ClusterFirst"
+      containers:
+        - name: cluster-autoscaler
+          image: "{{ .Image }}"
+          imagePullPolicy: "IfNotPresent"
+          command:
+            - ./cluster-autoscaler
+            - --balance-similar-node-groups={{ .BalanceSimilarNodeGroups }}
+            - --cloud-provider={{ GetCloudProvider }}
+            {{ if (eq GetCloudProvider "aws") }}
+            - --aws-use-static-instance-list={{ .AWSUseStaticInstanceList }}
+            {{ end }}
+            - --expander={{ .Expander }}
+            {{ range $name, $spec := GetNodeInstanceGroups }}
+            {{ if WithDefaultBool $spec.Autoscale true }}
+            - --nodes={{ $spec.MinSize }}:{{ $spec.MaxSize }}:{{ $name }}{{- if not (eq GetCloudProvider "gce") }}.{{ ClusterName }}{{ end -}}
+            {{ end }}
+            {{ end }}
+            - --scale-down-utilization-threshold={{ .ScaleDownUtilizationThreshold }}
+            - --skip-nodes-with-local-storage={{ .SkipNodesWithLocalStorage }}
+            - --skip-nodes-with-system-pods={{ .SkipNodesWithSystemPods }}
+            - --scale-down-delay-after-add={{ .ScaleDownDelayAfterAdd }}
+            - --new-pod-scale-up-delay={{ .NewPodScaleUpDelay }}
+            - --max-node-provision-time={{ .MaxNodeProvisionTime }}
+            - --logtostderr=true
+            - --stderrthreshold=info
+            - --v=4
+          env:
+            - name: AWS_REGION
+              value: "{{ Region }}"
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /health-check
+              port: http
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          ports:
+            - containerPort: 8085
+              name: http
+              protocol: TCP
+          resources:
+            requests:
+              cpu: {{ or .CPURequest "100m"}}
+              memory: {{ or .MemoryRequest "300Mi"}}
+      serviceAccountName: cluster-autoscaler
+      {{ if not UseServiceAccountExternalPermissions }}
+      tolerations:
+      - operator: "Exists"
+        key: node-role.kubernetes.io/control-plane
+      - operator: "Exists"
+        key: node-role.kubernetes.io/master
+      {{ end }}
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: "topology.kubernetes.io/zone"
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app: cluster-autoscaler
+      - maxSkew: 1
+        topologyKey: "kubernetes.io/hostname"
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: cluster-autoscaler
+{{ end }}

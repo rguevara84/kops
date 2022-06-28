@@ -20,7 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) DescribeInstances(*ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
@@ -31,6 +31,7 @@ func (m *MockEC2) DescribeInstances(*ec2.DescribeInstancesInput) (*ec2.DescribeI
 func (m *MockEC2) DescribeInstancesWithContext(aws.Context, *ec2.DescribeInstancesInput, ...request.Option) (*ec2.DescribeInstancesOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeInstancesRequest(*ec2.DescribeInstancesInput) (*request.Request, *ec2.DescribeInstancesOutput) {
 	panic("Not implemented")
 }
@@ -46,6 +47,22 @@ func (m *MockEC2) DescribeInstancesPages(request *ec2.DescribeInstancesInput, ca
 
 	return nil
 }
+
 func (m *MockEC2) DescribeInstancesPagesWithContext(aws.Context, *ec2.DescribeInstancesInput, func(*ec2.DescribeInstancesOutput, bool) bool, ...request.Option) error {
 	panic("Not implemented")
+}
+
+func (m *MockEC2) DescribeInstanceTypes(*ec2.DescribeInstanceTypesInput) (*ec2.DescribeInstanceTypesOutput, error) {
+	klog.Warningf("MockEc2::DescribeInstanceTypes is stub-implemented")
+	return &ec2.DescribeInstanceTypesOutput{}, nil
+}
+
+func (m *MockEC2) GetInstanceTypesFromInstanceRequirements(input *ec2.GetInstanceTypesFromInstanceRequirementsInput) (*ec2.GetInstanceTypesFromInstanceRequirementsOutput, error) {
+	return &ec2.GetInstanceTypesFromInstanceRequirementsOutput{
+		InstanceTypes: []*ec2.InstanceTypeInfoFromInstanceRequirements{
+			{
+				InstanceType: aws.String("c5.large"),
+			},
+		},
+	}, nil
 }

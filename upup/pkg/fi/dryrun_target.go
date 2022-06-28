@@ -25,7 +25,7 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/assets"
 	"k8s.io/kops/pkg/diff"
 	"k8s.io/kops/util/pkg/reflectutils"
@@ -222,6 +222,7 @@ func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error
 					fmt.Fprintf(b, "   internal consistency error!\n")
 					fmt.Fprintf(b, "    actual: %+v\n", r.a)
 					fmt.Fprintf(b, "    expect: %+v\n", r.e)
+					fmt.Fprintf(b, "    change: %+v\n", r.changes)
 					continue
 				}
 
@@ -251,20 +252,18 @@ func (t *DryRunTarget) PrintReport(taskMap map[string]Task, out io.Writer) error
 		}
 	}
 
-	if len(t.assetBuilder.ContainerAssets) != 0 {
-		klog.V(4).Infof("ContainerAssets:")
-		for _, a := range t.assetBuilder.ContainerAssets {
-			klog.V(4).Infof("  %s %s", a.DockerImage, a.CanonicalLocation)
+	if len(t.assetBuilder.ImageAssets) != 0 {
+		klog.V(4).Infof("ImageAssets:")
+		for _, a := range t.assetBuilder.ImageAssets {
+			klog.V(4).Infof("  %s %s", a.DownloadLocation, a.CanonicalLocation)
 		}
 	}
 
 	if len(t.assetBuilder.FileAssets) != 0 {
 		klog.V(4).Infof("FileAssets:")
 		for _, a := range t.assetBuilder.FileAssets {
-			if a.DownloadURL != nil && a.CanonicalURL != nil {
+			if a.DownloadURL != nil {
 				klog.V(4).Infof("  %s %s", a.DownloadURL.String(), a.CanonicalURL.String())
-			} else if a.DownloadURL != nil {
-				klog.V(4).Infof("  %s", a.DownloadURL.String())
 			}
 		}
 	}
@@ -301,35 +300,32 @@ func buildChangeList(a, e, changes Task) ([]change, error) {
 			}
 
 			fieldValC := valC.Field(i)
+			fieldValE := valE.Field(i)
+			fieldValA := valA.Field(i)
 
 			changed := true
 			switch fieldValC.Kind() {
 			case reflect.Ptr, reflect.Interface, reflect.Slice, reflect.Map:
 				changed = !fieldValC.IsNil()
+				if fieldValC.IsNil() && !fieldValA.IsNil() && fieldValE.IsNil() {
+					changed = true
+				}
 
 			case reflect.String:
-				changed = fieldValC.Interface().(string) != ""
+				changed = fieldValC.Convert(reflect.TypeOf("")).Interface() != ""
 			}
 			if !changed {
 				continue
 			}
 
-			if fieldValC.Kind() == reflect.String && fieldValC.Interface().(string) == "" {
-				// No change
-				continue
-			}
-
-			fieldValE := valE.Field(i)
-
 			description := ""
 			ignored := false
 			if fieldValE.CanInterface() {
-				fieldValA := valA.Field(i)
 
 				switch fieldValE.Interface().(type) {
-				//case SimpleUnit:
+				// case SimpleUnit:
 				//	ignored = true
-				case Resource, ResourceHolder:
+				case Resource:
 					resA, okA := tryResourceAsString(fieldValA)
 					resE, okE := tryResourceAsString(fieldValE)
 					if okA && okE {
@@ -372,14 +368,6 @@ func tryResourceAsString(v reflect.Value) (string, bool) {
 	intf := v.Interface()
 	if res, ok := intf.(Resource); ok {
 		s, err := ResourceAsString(res)
-		if err != nil {
-			klog.Warningf("error converting to resource: %v", err)
-			return "", false
-		}
-		return s, true
-	}
-	if res, ok := intf.(*ResourceHolder); ok {
-		s, err := res.AsString()
 		if err != nil {
 			klog.Warningf("error converting to resource: %v", err)
 			return "", false

@@ -25,11 +25,15 @@ import (
 )
 
 func (c *openstackCloud) GetKeypair(name string) (*keypairs.KeyPair, error) {
+	return getKeypair(c, name)
+}
+
+func getKeypair(c OpenstackCloud, name string) (*keypairs.KeyPair, error) {
 	var k *keypairs.KeyPair
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		rs, err := keypairs.Get(c.novaClient, name).Extract()
+		rs, err := keypairs.Get(c.ComputeClient(), name, nil).Extract()
 		if err != nil {
-			if err.Error() == ErrNotFound {
+			if isNotFound(err) {
 				return true, nil
 			}
 			return false, fmt.Errorf("error listing keypair: %v", err)
@@ -47,10 +51,14 @@ func (c *openstackCloud) GetKeypair(name string) (*keypairs.KeyPair, error) {
 }
 
 func (c *openstackCloud) CreateKeypair(opt keypairs.CreateOptsBuilder) (*keypairs.KeyPair, error) {
+	return createKeypair(c, opt)
+}
+
+func createKeypair(c OpenstackCloud, opt keypairs.CreateOptsBuilder) (*keypairs.KeyPair, error) {
 	var k *keypairs.KeyPair
 
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		v, err := keypairs.Create(c.novaClient, opt).Extract()
+		v, err := keypairs.Create(c.ComputeClient(), opt).Extract()
 		if err != nil {
 			return false, fmt.Errorf("error creating keypair: %v", err)
 		}
@@ -67,13 +75,19 @@ func (c *openstackCloud) CreateKeypair(opt keypairs.CreateOptsBuilder) (*keypair
 }
 
 func (c *openstackCloud) DeleteKeyPair(name string) error {
-	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		err := keypairs.Delete(c.novaClient, name).ExtractErr()
+	return deleteKeyPair(c, name)
+}
+
+func deleteKeyPair(c OpenstackCloud, name string) error {
+	done, err := vfs.RetryWithBackoff(deleteBackoff, func() (bool, error) {
+		err := keypairs.Delete(c.ComputeClient(), name, nil).ExtractErr()
 		if err != nil && !isNotFound(err) {
 			return false, fmt.Errorf("error deleting keypair: %v", err)
 		}
-
-		return true, nil
+		if isNotFound(err) {
+			return true, nil
+		}
+		return false, nil
 	})
 	if err != nil {
 		return err
@@ -85,9 +99,13 @@ func (c *openstackCloud) DeleteKeyPair(name string) error {
 }
 
 func (c *openstackCloud) ListKeypairs() ([]keypairs.KeyPair, error) {
+	return listKeypairs(c)
+}
+
+func listKeypairs(c OpenstackCloud) ([]keypairs.KeyPair, error) {
 	var k []keypairs.KeyPair
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := keypairs.List(c.novaClient).AllPages()
+		allPages, err := keypairs.List(c.ComputeClient(), nil).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("error listing keypairs: %v", err)
 		}

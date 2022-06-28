@@ -3,52 +3,54 @@
 
 ## kops
 
-kops is Kubernetes ops.
+kOps is Kubernetes Operations.
 
 ### Synopsis
 
-kops is Kubernetes ops.
+kOps is Kubernetes Operations.
 
- kops is the easiest way to get a production grade Kubernetes cluster up and running. We like to think of it as kubectl for clusters.
+ kOps is the easiest way to get a production grade Kubernetes cluster up and running. We like to think of it as kubectl for clusters.
 
- kops helps you create, destroy, upgrade and maintain production-grade, highly available, Kubernetes clusters from the command line.  AWS (Amazon Web Services) is currently officially supported, with GCE and VMware vSphere in alpha support.
+ kOps helps you create, destroy, upgrade and maintain production-grade, highly available, Kubernetes clusters from the command line. AWS (Amazon Web Services) is currently officially supported, with Digital Ocean and OpenStack in beta support.
 
 ### Options
 
 ```
-      --alsologtostderr                  log to standard error as well as files
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
+      --alsologtostderr                  log to standard error as well as files (no effect when -logtostderr=true)
       --config string                    yaml config file (default is $HOME/.kops.yaml)
   -h, --help                             help for kops
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --log_file string                  If non-empty, use this log file
-      --log_file_max_size uint           Defines the maximum size a log file can grow to. Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --log_dir string                   If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                  If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint           Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
+      --one_output                       If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when opening log files
+      --skip_log_headers                 If true, avoid headers when opening log files (no effect when -logtostderr=true)
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
+      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=false) (default 2)
   -v, --v Level                          number for the log level verbosity
       --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ### SEE ALSO
 
-* [kops completion](kops_completion.md)	 - Output shell completion code for the given shell (bash or zsh).
+* [kops completion](kops_completion.md)	 - Generate the autocompletion script for the specified shell
 * [kops create](kops_create.md)	 - Create a resource by command line, filename or stdin.
-* [kops delete](kops_delete.md)	 - Delete clusters,instancegroups, or secrets.
-* [kops describe](kops_describe.md)	 - Describe a resource.
+* [kops delete](kops_delete.md)	 - Delete clusters, instancegroups, instances, and secrets.
+* [kops distrust](kops_distrust.md)	 - Distrust keypairs.
 * [kops edit](kops_edit.md)	 - Edit clusters and other resources.
 * [kops export](kops_export.md)	 - Export configuration.
 * [kops get](kops_get.md)	 - Get one or many resources.
-* [kops import](kops_import.md)	 - Import a cluster.
+* [kops promote](kops_promote.md)	 - Promote a resource.
 * [kops replace](kops_replace.md)	 - Replace cluster resources.
 * [kops rolling-update](kops_rolling-update.md)	 - Rolling update a cluster.
-* [kops set](kops_set.md)	 - Set fields on clusters and other resources.
-* [kops toolbox](kops_toolbox.md)	 - Misc infrequently used commands.
+* [kops toolbox](kops_toolbox.md)	 - Miscellaneous, infrequently used commands.
+* [kops trust](kops_trust.md)	 - Trust keypairs.
 * [kops update](kops_update.md)	 - Update a cluster.
 * [kops upgrade](kops_upgrade.md)	 - Upgrade a kubernetes cluster.
-* [kops validate](kops_validate.md)	 - Validate a kops cluster.
-* [kops version](kops_version.md)	 - Print the kops version information.
+* [kops validate](kops_validate.md)	 - Validate a kOps cluster.
+* [kops version](kops_version.md)	 - Print the kOps version information.
 

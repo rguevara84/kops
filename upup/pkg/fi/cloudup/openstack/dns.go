@@ -27,10 +27,14 @@ import (
 
 // ListDNSZones will list available DNS zones
 func (c *openstackCloud) ListDNSZones(opt zones.ListOptsBuilder) ([]zones.Zone, error) {
+	return listDNSZones(c, opt)
+}
+
+func listDNSZones(c OpenstackCloud, opt zones.ListOptsBuilder) ([]zones.Zone, error) {
 	var zs []zones.Zone
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := zones.List(c.dnsClient, opt).AllPages()
+		allPages, err := zones.List(c.DNSClient(), opt).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("failed to list dns zones: %s", err)
 		}
@@ -52,10 +56,14 @@ func (c *openstackCloud) ListDNSZones(opt zones.ListOptsBuilder) ([]zones.Zone, 
 
 // ListDNSRecordsets will list DNS recordsets
 func (c *openstackCloud) ListDNSRecordsets(zoneID string, opt recordsets.ListOptsBuilder) ([]recordsets.RecordSet, error) {
+	return listDNSRecordsets(c, zoneID, opt)
+}
+
+func listDNSRecordsets(c OpenstackCloud, zoneID string, opt recordsets.ListOptsBuilder) ([]recordsets.RecordSet, error) {
 	var rrs []recordsets.RecordSet
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := recordsets.ListByZone(c.dnsClient, zoneID, opt).AllPages()
+		allPages, err := recordsets.ListByZone(c.DNSClient(), zoneID, opt).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("failed to list dns recordsets: %s", err)
 		}

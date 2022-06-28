@@ -21,19 +21,19 @@ import (
 	"strings"
 
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/pkg/pki"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=SSHKey
+// +kops:fitask
 type SSHKey struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	PublicKey *fi.ResourceHolder
+	PublicKey fi.Resource
 
 	KeyFingerprint *string
 }
@@ -71,7 +71,7 @@ func (e *SSHKey) Find(c *fi.Context) (*SSHKey, error) {
 
 func (e *SSHKey) Run(c *fi.Context) error {
 	if e.KeyFingerprint == nil && e.PublicKey != nil {
-		publicKey, err := e.PublicKey.AsString()
+		publicKey, err := fi.ResourceAsString(e.PublicKey)
 		if err != nil {
 			return fmt.Errorf("error reading SSH public key: %v", err)
 		}
@@ -117,7 +117,7 @@ func (_ *SSHKey) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes 
 		}
 
 		if e.PublicKey != nil {
-			d, err := e.PublicKey.AsString()
+			d, err := fi.ResourceAsString(e.PublicKey)
 			if err != nil {
 				return fmt.Errorf("error rendering SSHKey PublicKey: %v", err)
 			}

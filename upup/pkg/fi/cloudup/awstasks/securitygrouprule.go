@@ -18,26 +18,30 @@ package awstasks
 
 import (
 	"fmt"
-
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
+	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
-//go:generate fitask -type=SecurityGroupRule
+// +kops:fitask
 type SecurityGroupRule struct {
+	ID        *string
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	SecurityGroup *SecurityGroup
 	CIDR          *string
+	IPv6CIDR      *string
+	PrefixList    *string
 	Protocol      *string
 
 	// FromPort is the lower-bound (inclusive) of the port-range
@@ -47,6 +51,8 @@ type SecurityGroupRule struct {
 	SourceGroup *SecurityGroup
 
 	Egress *bool
+
+	Tags map[string]string
 }
 
 func (e *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
@@ -61,35 +67,24 @@ func (e *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
 		return nil, nil
 	}
 
-	request := &ec2.DescribeSecurityGroupsInput{
+	request := &ec2.DescribeSecurityGroupRulesInput{
 		Filters: []*ec2.Filter{
 			awsup.NewEC2Filter("group-id", *e.SecurityGroup.ID),
 		},
 	}
 
-	response, err := cloud.EC2().DescribeSecurityGroups(request)
+	response, err := cloud.EC2().DescribeSecurityGroupRules(request)
 	if err != nil {
 		return nil, fmt.Errorf("error listing SecurityGroup: %v", err)
 	}
 
-	if response == nil || len(response.SecurityGroups) == 0 {
+	if response == nil || len(response.SecurityGroupRules) == 0 {
 		return nil, nil
 	}
 
-	if len(response.SecurityGroups) != 1 {
-		klog.Fatalf("found multiple security groups for id=%s", *e.SecurityGroup.ID)
-	}
-	sg := response.SecurityGroups[0]
-	//klog.V(2).Info("found existing security group")
+	var foundRule *ec2.SecurityGroupRule
 
-	var foundRule *ec2.IpPermission
-
-	ipPermissions := sg.IpPermissions
-	if fi.BoolValue(e.Egress) {
-		ipPermissions = sg.IpPermissionsEgress
-	}
-
-	for _, rule := range ipPermissions {
+	for _, rule := range response.SecurityGroupRules {
 		if e.matches(rule) {
 			foundRule = rule
 			break
@@ -98,19 +93,38 @@ func (e *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
 
 	if foundRule != nil {
 		actual := &SecurityGroupRule{
+			ID:            foundRule.SecurityGroupRuleId,
 			Name:          e.Name,
 			SecurityGroup: &SecurityGroup{ID: e.SecurityGroup.ID},
 			FromPort:      foundRule.FromPort,
 			ToPort:        foundRule.ToPort,
 			Protocol:      foundRule.IpProtocol,
 			Egress:        e.Egress,
+
+			Tags: intersectTags(foundRule.Tags, e.Tags),
 		}
 
 		if aws.StringValue(actual.Protocol) == "-1" {
 			actual.Protocol = nil
 		}
+
+		if fi.StringValue(actual.Protocol) != "icmpv6" {
+			if fi.Int64Value(actual.FromPort) == int64(-1) {
+				actual.FromPort = nil
+			}
+			if fi.Int64Value(actual.ToPort) == int64(-1) {
+				actual.ToPort = nil
+			}
+		}
+
 		if e.CIDR != nil {
 			actual.CIDR = e.CIDR
+		}
+		if e.IPv6CIDR != nil {
+			actual.IPv6CIDR = e.IPv6CIDR
+		}
+		if e.PrefixList != nil {
+			actual.PrefixList = e.PrefixList
 		}
 		if e.SourceGroup != nil {
 			actual.SourceGroup = &SecurityGroup{ID: e.SourceGroup.ID}
@@ -119,17 +133,37 @@ func (e *SecurityGroupRule) Find(c *fi.Context) (*SecurityGroupRule, error) {
 		// Avoid spurious changes
 		actual.Lifecycle = e.Lifecycle
 
+		e.ID = actual.ID
+
 		return actual, nil
 	}
-
 	return nil, nil
 }
 
-func (e *SecurityGroupRule) matches(rule *ec2.IpPermission) bool {
-	if aws.Int64Value(rule.FromPort) != aws.Int64Value(e.FromPort) {
+func (e *SecurityGroupRule) SetCidrOrPrefix(cidr string) {
+	if strings.HasPrefix(cidr, "pl-") {
+		e.PrefixList = &cidr
+	} else if utils.IsIPv6CIDR(cidr) {
+		e.IPv6CIDR = &cidr
+	} else {
+		e.CIDR = &cidr
+	}
+}
+
+func (e *SecurityGroupRule) matches(rule *ec2.SecurityGroupRule) bool {
+	matchFromPort := int64(-1)
+	if e.FromPort != nil {
+		matchFromPort = *e.FromPort
+	}
+	if aws.Int64Value(rule.FromPort) != matchFromPort {
 		return false
 	}
-	if aws.Int64Value(rule.ToPort) != aws.Int64Value(e.ToPort) {
+
+	matchToPort := int64(-1)
+	if e.ToPort != nil {
+		matchToPort = *e.ToPort
+	}
+	if aws.Int64Value(rule.ToPort) != matchToPort {
 		return false
 	}
 
@@ -141,39 +175,23 @@ func (e *SecurityGroupRule) matches(rule *ec2.IpPermission) bool {
 		return false
 	}
 
-	if e.CIDR != nil {
-		// TODO: Only if len 1?
-		match := false
-		for _, ipRange := range rule.IpRanges {
-			if aws.StringValue(ipRange.CidrIp) == *e.CIDR {
-				match = true
-				break
-			}
-		}
-		if !match {
-			return false
-		}
+	if fi.StringValue(e.CIDR) != fi.StringValue(rule.CidrIpv4) {
+		return false
 	}
 
-	if e.SourceGroup != nil {
-		// TODO: Only if len 1?
-		match := false
-		for _, spec := range rule.UserIdGroupPairs {
-			if e.SourceGroup == nil {
-				continue
-			}
+	if fi.StringValue(e.IPv6CIDR) != fi.StringValue(rule.CidrIpv6) {
+		return false
+	}
 
-			if e.SourceGroup.ID == nil {
-				klog.Warningf("SourceGroup had nil ID: %v", e.SourceGroup)
-				continue
-			}
+	if fi.StringValue(e.PrefixList) != fi.StringValue(rule.PrefixListId) {
+		return false
+	}
 
-			if aws.StringValue(spec.GroupId) == *e.SourceGroup.ID {
-				match = true
-				break
-			}
+	if e.SourceGroup != nil || rule.ReferencedGroupInfo != nil {
+		if e.SourceGroup == nil || rule.ReferencedGroupInfo == nil {
+			return false
 		}
-		if !match {
+		if fi.StringValue(e.SourceGroup.ID) != fi.StringValue(rule.ReferencedGroupInfo.GroupId) {
 			return false
 		}
 	}
@@ -188,6 +206,12 @@ func (_ *SecurityGroupRule) CheckChanges(a, e, changes *SecurityGroupRule) error
 	if a == nil {
 		if e.SecurityGroup == nil {
 			return field.Required(field.NewPath("SecurityGroup"), "")
+		}
+		if e.CIDR != nil && e.IPv6CIDR != nil {
+			return field.Forbidden(field.NewPath("CIDR/IPv6CIDR"), "Cannot set more than 1 CIDR or IPv6CIDR")
+		}
+		if e.PrefixList != nil && (e.CIDR != nil || e.IPv6CIDR != nil) {
+			return field.Forbidden(field.NewPath("PrefixList"), "Cannot set PrefixList when CIDR or IPv6CIDR is set")
 		}
 	}
 
@@ -225,6 +249,14 @@ func (e *SecurityGroupRule) Description() string {
 		description = append(description, fmt.Sprintf("cidr=%s", *e.CIDR))
 	}
 
+	if e.IPv6CIDR != nil {
+		description = append(description, fmt.Sprintf("ipv6cidr=%s", *e.IPv6CIDR))
+	}
+
+	if e.PrefixList != nil {
+		description = append(description, fmt.Sprintf("prefixList=%s", *e.PrefixList))
+	}
+
 	return strings.Join(description, " ")
 }
 
@@ -249,10 +281,24 @@ func (_ *SecurityGroupRule) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Secu
 					GroupId: e.SourceGroup.ID,
 				},
 			}
-		} else {
-			// Default to 0.0.0.0/0 ?
+		} else if e.IPv6CIDR != nil {
+			IPv6CIDR := e.IPv6CIDR
+			ipPermission.Ipv6Ranges = []*ec2.Ipv6Range{
+				{CidrIpv6: IPv6CIDR},
+			}
+		} else if e.CIDR != nil {
+			CIDR := e.CIDR
 			ipPermission.IpRanges = []*ec2.IpRange{
-				{CidrIp: e.CIDR},
+				{CidrIp: CIDR},
+			}
+		} else if e.PrefixList != nil {
+			PrefixList := e.PrefixList
+			ipPermission.PrefixListIds = []*ec2.PrefixListId{
+				{PrefixListId: PrefixList},
+			}
+		} else {
+			ipPermission.IpRanges = []*ec2.IpRange{
+				{CidrIp: aws.String("0.0.0.0/0")},
 			}
 		}
 
@@ -263,6 +309,7 @@ func (_ *SecurityGroupRule) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Secu
 				GroupId: e.SecurityGroup.ID,
 			}
 			request.IpPermissions = []*ec2.IpPermission{ipPermission}
+			request.TagSpecifications = awsup.EC2TagSpecification(ec2.ResourceTypeSecurityGroupRule, e.Tags)
 
 			klog.V(2).Infof("%s: Calling EC2 AuthorizeSecurityGroupEgress (%s)", name, description)
 			_, err := t.Cloud.EC2().AuthorizeSecurityGroupEgress(request)
@@ -274,6 +321,7 @@ func (_ *SecurityGroupRule) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Secu
 				GroupId: e.SecurityGroup.ID,
 			}
 			request.IpPermissions = []*ec2.IpPermission{ipPermission}
+			request.TagSpecifications = awsup.EC2TagSpecification(ec2.ResourceTypeSecurityGroupRule, e.Tags)
 
 			klog.V(2).Infof("%s: Calling EC2 AuthorizeSecurityGroupIngress (%s)", name, description)
 			_, err := t.Cloud.EC2().AuthorizeSecurityGroupIngress(request)
@@ -282,6 +330,8 @@ func (_ *SecurityGroupRule) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Secu
 			}
 		}
 
+	} else if changes.Tags != nil {
+		return t.AddAWSTags(*a.ID, e.Tags)
 	}
 
 	// No tags on security group rules (there are tags on the group though)
@@ -290,16 +340,18 @@ func (_ *SecurityGroupRule) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Secu
 }
 
 type terraformSecurityGroupIngress struct {
-	Type *string `json:"type"`
+	Type *string `cty:"type"`
 
-	SecurityGroup *terraform.Literal `json:"security_group_id"`
-	SourceGroup   *terraform.Literal `json:"source_security_group_id,omitempty"`
+	SecurityGroup *terraformWriter.Literal `cty:"security_group_id"`
+	SourceGroup   *terraformWriter.Literal `cty:"source_security_group_id"`
 
-	FromPort *int64 `json:"from_port,omitempty"`
-	ToPort   *int64 `json:"to_port,omitempty"`
+	FromPort *int64 `cty:"from_port"`
+	ToPort   *int64 `cty:"to_port"`
 
-	Protocol   *string  `json:"protocol,omitempty"`
-	CIDRBlocks []string `json:"cidr_blocks,omitempty"`
+	Protocol       *string  `cty:"protocol"`
+	CIDRBlocks     []string `cty:"cidr_blocks"`
+	IPv6CIDRBlocks []string `cty:"ipv6_cidr_blocks"`
+	PrefixListIDs  []string `cty:"prefix_list_ids"`
 }
 
 func (_ *SecurityGroupRule) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *SecurityGroupRule) error {
@@ -336,6 +388,13 @@ func (_ *SecurityGroupRule) RenderTerraform(t *terraform.TerraformTarget, a, e, 
 	if e.CIDR != nil {
 		tf.CIDRBlocks = append(tf.CIDRBlocks, *e.CIDR)
 	}
+	if e.IPv6CIDR != nil {
+		tf.IPv6CIDRBlocks = append(tf.IPv6CIDRBlocks, *e.IPv6CIDR)
+	}
+	if e.PrefixList != nil {
+		tf.PrefixListIDs = append(tf.PrefixListIDs, *e.PrefixList)
+	}
+
 	return t.RenderResource("aws_security_group_rule", *e.Name, tf)
 }
 
@@ -346,8 +405,10 @@ type cloudformationSecurityGroupIngress struct {
 	FromPort *int64 `json:"FromPort,omitempty"`
 	ToPort   *int64 `json:"ToPort,omitempty"`
 
-	Protocol *string `json:"IpProtocol,omitempty"`
-	CidrIp   *string `json:"CidrIp,omitempty"`
+	Protocol           *string `json:"IpProtocol,omitempty"`
+	CidrIp             *string `json:"CidrIp,omitempty"`
+	CidrIpv6           *string `json:"CidrIpv6,omitempty"`
+	SourcePrefixListId *string `json:"SourcePrefixListId,omitempty"`
 }
 
 func (_ *SecurityGroupRule) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *SecurityGroupRule) error {
@@ -384,6 +445,12 @@ func (_ *SecurityGroupRule) RenderCloudformation(t *cloudformation.Cloudformatio
 
 	if e.CIDR != nil {
 		tf.CidrIp = e.CIDR
+	}
+	if e.IPv6CIDR != nil {
+		tf.CidrIpv6 = e.IPv6CIDR
+	}
+	if e.PrefixList != nil {
+		tf.SourcePrefixListId = e.PrefixList
 	}
 
 	return t.RenderResource(cfType, *e.Name, tf)

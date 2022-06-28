@@ -3,18 +3,18 @@
 
 ## kops create secret weavepassword
 
-Create a weave encryption config.
+Create a Weave password.
 
 ### Synopsis
 
-Create a new weave encryption secret, and store it in the state store. Used to weave networking to use encrypted communication between nodes.
+Create a new weave encryption secret and store it in the state store. Used by Weave networking to encrypt communication between nodes.
 
- If no password is provided, kops will generate one at random.
+ If no password is provided, kOps will generate one at random.
 
- WARNING: cannot be enabled on a running cluster without downtime.
+ WARNING: cannot be enabled or changed on a running cluster without downtime.
 
 ```
-kops create secret weavepassword [flags]
+kops create secret weavepassword [CLUSTER] [flags]
 ```
 
 ### Examples
@@ -22,41 +22,46 @@ kops create secret weavepassword [flags]
 ```
   # Create a new random weave password.
   kops create secret weavepassword \
-  --name k8s-cluster.example.com --state s3://example.com
+  --name k8s-cluster.example.com --state s3://my-state-store
+  
   # Install a specific weave password.
   kops create secret weavepassword -f /path/to/weavepassword \
-  --name k8s-cluster.example.com --state s3://example.com
+  --name k8s-cluster.example.com --state s3://my-state-store
+  
   # Install a specific weave password via stdin.
   kops create secret weavepassword -f - \
-  --name k8s-cluster.example.com --state s3://example.com
-  # Replace an existing weavepassword secret.
+  --name k8s-cluster.example.com --state s3://my-state-store
+  
+  # Replace an existing weave password.
   kops create secret weavepassword -f /path/to/weavepassword --force \
-  --name k8s-cluster.example.com --state s3://example.com
+  --name k8s-cluster.example.com --state s3://my-state-store
 ```
 
 ### Options
 
 ```
-  -f, -- string   Path to the weave password file (optional)
-      --force     Force replace the kops secret if it already exists
-  -h, --help      help for weavepassword
+  -f, --filename string   Path to Weave password file
+      --force             Force replace the secret if it already exists
+  -h, --help              help for weavepassword
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
+      --alsologtostderr                  log to standard error as well as files (no effect when -logtostderr=true)
       --config string                    yaml config file (default is $HOME/.kops.yaml)
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --log_file string                  If non-empty, use this log file
-      --log_file_max_size uint           Defines the maximum size a log file can grow to. Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --log_dir string                   If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                  If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint           Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
+      --one_output                       If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when opening log files
+      --skip_log_headers                 If true, avoid headers when opening log files (no effect when -logtostderr=true)
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
+      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=false) (default 2)
   -v, --v Level                          number for the log level verbosity
       --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
 ```

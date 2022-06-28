@@ -17,15 +17,15 @@ limitations under the License.
 package fitasks
 
 import (
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
-//go:generate fitask -type=MirrorKeystore
+// +kops:fitask
 type MirrorKeystore struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	MirrorPath vfs.Path
 }

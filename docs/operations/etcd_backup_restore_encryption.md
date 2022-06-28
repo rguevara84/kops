@@ -8,37 +8,32 @@ can be found [here](https://kubernetes.io/docs/admin/etcd/) and
 
 ### Backup requirement
 
-A Kubernetes cluster deployed with kops stores the etcd state in two different
+A Kubernetes cluster deployed with kOps stores the etcd state in two different
 AWS EBS volumes per master node. One volume is used to store the Kubernetes
 main data, the other one for events. For a HA master with three nodes this will
 result in six volumes for etcd data (one in each AZ). An EBS volume is designed
 to have a [failure rate](https://aws.amazon.com/ebs/details/#AvailabilityandDurability)
 of 0.1%-0.2% per year.
 
-### Backups using etcd-manager
+## Backup and restore using etcd-manager
 
-Backups are done periodically and before cluster modifications using [etcd-manager](../etcd/manager.md)
-(introduced in kops 1.12). Backups for both the `main` and `events` etcd clusters
+## Taking backups
+
+Backups are done periodically and before cluster modifications using [etcd-manager](etcd_administration.md)
+(introduced in kOps 1.12). Backups for both the `main` and `events` etcd clusters
 are stored in object storage (like S3) together with the cluster configuration.
 
-### Volume backups (legacy etcd)
+By default, backups are taken every 15 min. Hourly backups are kept for 1 week and
+daily backups are kept for 1 year, before being automatically removed. The retention
+duration for backups [can be adjusted](../cluster_spec.md#etcd-backups-retention)
+to suit other needs.
 
-If you are running your cluster in legacy etcd mode (without etcd-manager),
-backups can be done through snapshots of the etcd volumes.
-
-You can for example use CloudWatch to trigger an AWS Lambda with a defined schedule (e.g. once per
-hour). The Lambda will then create a new snapshot of all etcd volumes. A complete
-guide on how to setup automated snapshots can be found [here](https://serverlesscode.com/post/lambda-schedule-ebs-snapshot-backups/).
-
-Note: this is one of many examples on how to do scheduled snapshots.
-
-## Restore using etcd-manager
+## Restore backups
 
 In case of a disaster situation with etcd (lost data, cluster issues etc.) it's
 possible to do a restore of the etcd cluster using `etcd-manager-ctl`.
-Currently the `etcd-manager-ctl` binary is not shipped, so you will have to build it yourself.
-Please check the documentation at the [etcd-manager repository](https://github.com/kopeio/etcd-manager).
-It is not necessary to run `etcd-manager-ctl` in your cluster, as long as you have access to cluster storage (like S3).
+You can download the `etcd-manager-ctl` binary from the [etcd-manager repository](https://github.com/kopeio/etcd-manager/releases).
+It is not necessary to run `etcd-manager-ctl` in your cluster, as long as you have access to cluster state storage (like S3).
 
 Please note that this process involves downtime for your masters (and so the api server).
 A restore cannot be undone (unless by restoring again), and you might lose pods, events
@@ -56,12 +51,15 @@ etcd-manager-ctl --backup-store=s3://my.clusters/test.my.clusters/backups/etcd/e
 Add a restore command for both clusters:
 
 ```
-etcd-manager-ctl --backup-store=s3://my.clusters/test.my.clusters/backups/etcd/main restore-backup [main backup file]
-etcd-manager-ctl --backup-store=s3://my.clusters/test.my.clusters/backups/etcd/events restore-backup [events backup file]
+etcd-manager-ctl --backup-store=s3://my.clusters/test.my.clusters/backups/etcd/main restore-backup [main backup dir]
+etcd-manager-ctl --backup-store=s3://my.clusters/test.my.clusters/backups/etcd/events restore-backup [events backup dir]
 ```
 
-Note that this does not start the restore immediately; you need to restart etcd on all masters
-(or roll your masters quickly). A new etcd cluster will be created and the backup will be
+Note that this does not start the restore immediately; you need to restart etcd on all masters.
+You can do this with a `docker stop` or `kill` on the etcd-manager containers on the masters (the container names start with `k8s_etcd-manager_etcd-manager`).
+The etcd-manager containers should restart automatically, and pick up the restore command. You also have the option to roll your masters quickly, but restarting the containers is preferred.
+
+A new etcd cluster will be created and the backup will be
 restored onto this new cluster. Please note that this process might take a short while,
 depending on the size of your cluster.
 
@@ -69,13 +67,55 @@ You can follow the progress by reading the etcd logs (`/var/log/etcd(-events).lo
 on the master that is the leader of the cluster (you can find this out by checking the etcd logs on all masters).
 Note that the leader might be different for the `main` and `events` clusters.
 
+After the restore, you will probably face an intermittent connection to apiserver.
+If you look at your kubernetes endpoint, you should have more addresses than masters. The restore brings back the addresses of the old masters and you should clean this up.
+
+To verify this, check the endpoints resource of the kubernetes apiserver, like this:
+```
+kubectl get endpoints/kubernetes -o yaml
+```
+
+If you see more address than masters, you will need to remove it manually inside the etcd.
+
+Check again (this time inside the etcd) if you have more IPs than masters at the `/registry/masterleases/` path, e.g.:
+```
+ETCDCTL_API=3 etcdctl --cacert=/etc/kubernetes/pki/kube-apiserver/etcd-ca.crt --cert=/etc/kubernetes/pki/kube-apiserver/etcd-client.crt --key=/etc/kubernetes/pki/kube-apiserver/etcd-client.key --endpoints=https://127.0.0.1:4001 get --prefix --keys-only /registry/masterleases
+```
+
+To restore the stability within cluster you should delete the old master records and keep only the running ones:
+```
+ETCDCTL_API=3 etcdctl --cacert=/etc/kubernetes/pki/kube-apiserver/etcd-ca.crt --cert=/etc/kubernetes/pki/kube-apiserver/etcd-client.crt --key=/etc/kubernetes/pki/kube-apiserver/etcd-client.key --endpoints=https://127.0.0.1:4001 del /registry/masterleases/<OLD-IP>
+```
+NOTE: You will need to run it multiple times for each old IP, regarding the size of your master pool.
+
+After that, you can check again the endpoint and everything should be fixed.
+
 After the restore is complete, api server should come back up, and you should have a working cluster.
-Note that the api server might be very busy for a while as it changes the cluster back to the state of the backup.
-It's a good idea to temporarily increase the instance size of your masters and roll your worker nodes.
+Note that the api server might be very busy for a while as it changes the cluster back to the state of the backup. 
+You might consider temporarily increasing the instance size of your control plane.
+
+Because the state on each of the Nodes may differ from the state in etcd, it is also a good idea to do a rolling-update of the entire cluster:
+
+```sh
+kops rolling-update cluster --force --yes
+```
 
 For more information and troubleshooting, please check the [etcd-manager documentation](https://github.com/kopeio/etcd-manager).
 
-### Restore volume backups (legacy etcd)
+## Backup and restore using legacy etcd
+
+### Volume backups
+
+If you are running your cluster in legacy etcd mode (without etcd-manager),
+backups can be done through snapshots of the etcd volumes.
+
+You can for example use CloudWatch to trigger an AWS Lambda with a defined schedule (e.g. once per
+hour). The Lambda will then create a new snapshot of all etcd volumes. A complete
+guide on how to setup automated snapshots can be found [here](https://serverlesscode.com/post/lambda-schedule-ebs-snapshot-backups/).
+
+Note: this is one of many examples on how to do scheduled snapshots.
+
+### Restore volume backups
 
 If you're using legacy etcd (without etcd-manager), it is possible to restore the volume from a snapshot we created
 earlier. Details about creating a volume from a snapshot can be found in the
@@ -107,7 +147,7 @@ Edit your cluster to add `encryptedVolume: true` to each etcd volume:
 
 `kops edit cluster ${CLUSTER_NAME}`
 
-```
+```yaml
 ...
 etcdClusters:
 - etcdMembers:
@@ -137,7 +177,7 @@ Edit your cluster to add `encryptedVolume: true` to each etcd volume:
 
 `kops edit cluster ${CLUSTER_NAME}`
 
-```
+```yaml
 ...
 etcdClusters:
 - etcdMembers:

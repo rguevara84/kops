@@ -3,18 +3,20 @@ package elastigroup
 import (
 	"github.com/spotinst/spotinst-sdk-go/service/elastigroup/providers/aws"
 	"github.com/spotinst/spotinst-sdk-go/service/elastigroup/providers/azure"
+	azurev3 "github.com/spotinst/spotinst-sdk-go/service/elastigroup/providers/azure/v3"
 	"github.com/spotinst/spotinst-sdk-go/service/elastigroup/providers/gcp"
 	"github.com/spotinst/spotinst-sdk-go/spotinst"
 	"github.com/spotinst/spotinst-sdk-go/spotinst/client"
 	"github.com/spotinst/spotinst-sdk-go/spotinst/session"
 )
 
-// Service provides the API operation methods for making requests to
-// endpoints of the Spotinst API. See this package's package overview docs
-// for details on the service.
+// Service provides the API operation methods for making requests to endpoints
+// of the Spotinst API. See this package's package overview docs for details on
+// the service.
 type Service interface {
 	CloudProviderAWS() aws.Service
 	CloudProviderAzure() azure.Service
+	CloudProviderAzureV3() azurev3.Service
 	CloudProviderGCP() gcp.Service
 }
 
@@ -42,6 +44,12 @@ func (s *ServiceOp) CloudProviderAWS() aws.Service {
 
 func (s *ServiceOp) CloudProviderAzure() azure.Service {
 	return &azure.ServiceOp{
+		Client: s.Client,
+	}
+}
+
+func (s *ServiceOp) CloudProviderAzureV3() azurev3.Service {
+	return &azurev3.ServiceOp{
 		Client: s.Client,
 	}
 }

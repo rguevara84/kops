@@ -20,52 +20,74 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
-
-	"github.com/aws/aws-sdk-go/aws"
-	"k8s.io/klog"
 )
 
-// LaunchTemplate defines the specificate for a template
+// LaunchTemplate defines the specification for a launch template.
+// +kops:fitask
 type LaunchTemplate struct {
+	// ID is the launch configuration name
+	ID *string
 	// Name is the name of the configuration
 	Name *string
 	// Lifecycle is the resource lifecycle
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	// AssociatePublicIP indicates if a public ip address is assigned to instabces
+	// AssociatePublicIP indicates if a public ip address is assigned to instances
 	AssociatePublicIP *bool
 	// BlockDeviceMappings is a block device mappings
 	BlockDeviceMappings []*BlockDeviceMapping
+	// CPUCredits is the credit option for CPU Usage on some instance types
+	CPUCredits *string
+	// HTTPPutResponseHopLimit is the desired HTTP PUT response hop limit for instance metadata requests.
+	HTTPPutResponseHopLimit *int64
+	// HTTPTokens is the state of token usage for your instance metadata requests.
+	HTTPTokens *string
+	// HTTPProtocolIPv6 enables the IPv6 instance metadata endpoint
+	HTTPProtocolIPv6 *string
 	// IAMInstanceProfile is the IAM profile to assign to the nodes
 	IAMInstanceProfile *IAMInstanceProfile
-	// ID is the launch configuration name
-	ID *string
 	// ImageID is the AMI to use for the instances
 	ImageID *string
+	// InstanceInterruptionBehavior defines if a spot instance should be terminated, hibernated,
+	// or stopped after interruption
+	InstanceInterruptionBehavior *string
 	// InstanceMonitoring indicates if monitoring is enabled
 	InstanceMonitoring *bool
 	// InstanceType is the type of instance we are using
 	InstanceType *string
-	// If volume type is io1, then we need to specify the number of Iops.
+	// Ipv6AddressCount is the number of IPv6 addresses to assign with the primary network interface.
+	IPv6AddressCount *int64
+	// RootVolumeIops is the provisioned IOPS when the volume type is io1, io2 or gp3
 	RootVolumeIops *int64
 	// RootVolumeOptimization enables EBS optimization for an instance
 	RootVolumeOptimization *bool
 	// RootVolumeSize is the size of the EBS root volume to use, in GB
 	RootVolumeSize *int64
+	// RootVolumeThroughput is the volume throughput in MBps when the volume type is gp3
+	RootVolumeThroughput *int64
 	// RootVolumeType is the type of the EBS root volume to use (e.g. gp2)
 	RootVolumeType *string
+	// RootVolumeEncryption enables EBS root volume encryption for an instance
+	RootVolumeEncryption *bool
+	// RootVolumeKmsKey is the encryption key identifier for EBS root volume encryption
+	RootVolumeKmsKey *string
 	// SSHKey is the ssh key for the instances
 	SSHKey *SSHKey
 	// SecurityGroups is a list of security group associated
 	SecurityGroups []*SecurityGroup
 	// SpotPrice is set to the spot-price bid if this is a spot pricing request
-	SpotPrice string
+	SpotPrice *string
+	// SpotDurationInMinutes is set for requesting spot blocks
+	SpotDurationInMinutes *int64
+	// Tags are the keypairs to apply to the instance and volume on launch as well as the launch template itself.
+	Tags map[string]string
 	// Tenancy. Can be either default or dedicated.
 	Tenancy *string
 	// UserData is the user data configuration
-	UserData *fi.ResourceHolder
+	UserData fi.Resource
 }
 
 var (
@@ -77,11 +99,6 @@ var (
 // CompareWithID implements the comparable interface
 func (t *LaunchTemplate) CompareWithID() *string {
 	return t.ID
-}
-
-// LaunchTemplateName returns the lanuch template name
-func (t *LaunchTemplate) LaunchTemplateName() string {
-	return fmt.Sprintf("%s-%s", fi.StringValue(t.Name), fi.BuildTimestampString())
 }
 
 // buildRootDevice is responsible for retrieving a boot device mapping from the image name
@@ -99,12 +116,20 @@ func (t *LaunchTemplate) buildRootDevice(cloud awsup.AWSCloud) (map[string]*Bloc
 		return nil, fmt.Errorf("unable to resolve image: %q: not found", image)
 	}
 
-	bm := make(map[string]*BlockDeviceMapping)
-	bm[aws.StringValue(img.RootDeviceName)] = &BlockDeviceMapping{
+	b := &BlockDeviceMapping{
 		EbsDeleteOnTermination: aws.Bool(true),
 		EbsVolumeSize:          t.RootVolumeSize,
 		EbsVolumeType:          t.RootVolumeType,
 		EbsVolumeIops:          t.RootVolumeIops,
+		EbsVolumeThroughput:    t.RootVolumeThroughput,
+		EbsEncrypted:           t.RootVolumeEncryption,
+	}
+	if aws.BoolValue(t.RootVolumeEncryption) && aws.StringValue(t.RootVolumeKmsKey) != "" {
+		b.EbsKmsKey = t.RootVolumeKmsKey
+	}
+
+	bm := map[string]*BlockDeviceMapping{
+		aws.StringValue(img.RootDeviceName): b,
 	}
 
 	return bm, nil
@@ -127,9 +152,6 @@ func (t *LaunchTemplate) CheckChanges(a, e, changes *LaunchTemplate) error {
 	if e.ImageID == nil {
 		return fi.RequiredField("ImageID")
 	}
-	if e.InstanceType == nil {
-		return fi.RequiredField("InstanceType")
-	}
 
 	if a != nil {
 		if e.Name == nil {
@@ -143,22 +165,16 @@ func (t *LaunchTemplate) CheckChanges(a, e, changes *LaunchTemplate) error {
 func (t *LaunchTemplate) FindDeletions(c *fi.Context) ([]fi.Deletion, error) {
 	var removals []fi.Deletion
 
-	configurations, err := t.findLaunchTemplates(c)
+	list, err := t.findAllLaunchTemplates(c)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(configurations) <= RetainLaunchConfigurationCount() {
-		return nil, nil
+	for _, lt := range list {
+		if aws.StringValue(lt.LaunchTemplateName) != aws.StringValue(t.Name) {
+			removals = append(removals, &deleteLaunchTemplate{lc: lt})
+		}
 	}
-
-	configurations = configurations[:len(configurations)-RetainLaunchConfigurationCount()]
-
-	for _, configuration := range configurations {
-		removals = append(removals, &deleteLaunchTemplate{lc: configuration})
-	}
-
-	klog.V(2).Infof("will delete launch template: %v", removals)
 
 	return removals, nil
 }

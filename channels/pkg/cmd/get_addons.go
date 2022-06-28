@@ -33,6 +33,7 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -44,8 +45,7 @@ import (
 	"k8s.io/kops/util/pkg/tables"
 )
 
-type GetAddonsOptions struct {
-}
+type GetAddonsOptions struct{}
 
 func NewCmdGetAddons(f Factory, out io.Writer) *cobra.Command {
 	var options GetAddonsOptions
@@ -56,7 +56,8 @@ func NewCmdGetAddons(f Factory, out io.Writer) *cobra.Command {
 		Short:   "get addons",
 		Long:    `List or get addons.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return RunGetAddons(f, out, &options)
+			ctx := context.TODO()
+			return RunGetAddons(ctx, f, out, &options)
 		},
 	}
 
@@ -69,13 +70,13 @@ type addonInfo struct {
 	Namespace *v1.Namespace
 }
 
-func RunGetAddons(f Factory, out io.Writer, options *GetAddonsOptions) error {
+func RunGetAddons(ctx context.Context, f Factory, out io.Writer, options *GetAddonsOptions) error {
 	k8sClient, err := f.KubernetesClient()
 	if err != nil {
 		return err
 	}
 
-	namespaces, err := k8sClient.CoreV1().Namespaces().List(metav1.ListOptions{})
+	namespaces, err := k8sClient.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("error listing namespaces: %v", err)
 	}
@@ -84,7 +85,7 @@ func RunGetAddons(f Factory, out io.Writer, options *GetAddonsOptions) error {
 
 	for i := range namespaces.Items {
 		ns := &namespaces.Items[i]
-		addons := channels.FindAddons(ns)
+		addons := channels.FindChannelVersions(ns)
 		for name, version := range addons {
 			i := &addonInfo{
 				Name:      name,
@@ -108,14 +109,11 @@ func RunGetAddons(f Factory, out io.Writer, options *GetAddonsOptions) error {
 		t.AddColumn("NAMESPACE", func(r *addonInfo) string {
 			return r.Namespace.Name
 		})
-		t.AddColumn("VERSION", func(r *addonInfo) string {
+		t.AddColumn("HASH", func(r *addonInfo) string {
 			if r.Version == nil {
 				return "-"
 			}
-			if r.Version.Version != nil {
-				return *r.Version.Version
-			}
-			return "?"
+			return r.Version.ManifestHash
 		})
 		t.AddColumn("CHANNEL", func(r *addonInfo) string {
 			if r.Version == nil {
@@ -127,7 +125,7 @@ func RunGetAddons(f Factory, out io.Writer, options *GetAddonsOptions) error {
 			return "?"
 		})
 
-		columns := []string{"NAMESPACE", "NAME", "VERSION", "CHANNEL"}
+		columns := []string{"NAMESPACE", "NAME", "HASH", "CHANNEL"}
 		err := t.Render(info, os.Stdout, columns...)
 		if err != nil {
 			return err

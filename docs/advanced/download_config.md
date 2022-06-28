@@ -1,12 +1,12 @@
-# Download kops config spec file
+# Download kOps config spec file
 
-KOPS operates off of a config spec file that is generated during the create phase.  It is uploaded to the amazon s3 bucket that is passed in during create.
+kOps operates off of a config spec file that is generated during the create phase. It is uploaded to the amazon s3 bucket that is passed in during create.
 
-If you download the config spec file on a running cluster that is configured the way you like it, you can just pass that config spec file in to the create command and have kops create the cluster for you , `kops create -f spec_file` in a completely unattended manner.
+If you download the config spec file on a running cluster that is configured the way you like it, you can just pass that config spec file in to the create command and have kOps create the cluster for you, `kops create -f spec_file` in a completely unattended manner.
 
 Let us say you create your cluster with the following configuration options:
 
-```
+```shell
 export KOPS_STATE_STORE=s3://k8s-us-west
 export CLOUD=aws
 export ZONE="us-west-1a"
@@ -17,9 +17,9 @@ export NETWORKCIDR="10.240.0.0/16"
 export MASTER_SIZE="m3.large"
 export WORKER_SIZE="m4.large"
 ```
-Next you call the kops command to create the cluster in your terminal:
+Next you call the kOps command to create the cluster in your terminal:
 
-```
+```shell
 kops create cluster $NAME              \
    --cloud=$CLOUD                      \
    --zones="$ZONE"                     \
@@ -33,9 +33,9 @@ kops create cluster $NAME              \
    --ssh-public-key=$HOME/.ssh/lab_no_password.pub
 ```
 
-## kops command
+## kOps command
 
-You can simply use the kops command `kops get --name $NAME -o yaml > a_fun_name_you_will_remember.yml`
+You can simply use the kOps command `kops get --name $NAME -o yaml > a_fun_name_you_will_remember.yml`
 
 Note: for the above command to work the cluster NAME and the KOPS_STATE_STORE will have to be exported in your environment.
 
@@ -43,7 +43,7 @@ For more information on how to use and modify the configurations see [here](../m
 
 ## Managing instance groups
 
-You can also manage instance groups in separate YAML files as well.  The command `kops get --name $NAME -o yaml > $NAME.yml` exports the entire cluster.  An option is to have a YAML file for the cluster, and individual YAML files for the instance groups.  This allows you to do stuff like:
+You can also manage instance groups in separate YAML files as well. The command `kops get --name $NAME -o yaml > $NAME.yml` exports the entire cluster. An option is to have a YAML file for the cluster, and individual YAML files for the instance groups. This allows you to do stuff like:
 
 ```shell
 if ! kops get cluster --name "$NAME"; then

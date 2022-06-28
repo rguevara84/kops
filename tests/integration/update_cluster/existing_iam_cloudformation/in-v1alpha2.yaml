@@ -18,12 +18,15 @@ spec:
     - instanceGroup: master-us-test-1a
       name: us-test-1a
     name: events
-  kubernetesVersion: v1.14.0
+  iam: {}
+  kubelet:
+    anonymousAuth: false
+  kubernetesVersion: v1.21.0
   masterInternalName: api.internal.minimal.example.com
   masterPublicName: api.minimal.example.com
   networkCIDR: 172.20.0.0/16
   networking:
-    kubenet: {}
+    cni: {}
   nonMasqueradeCIDR: 100.64.0.0/10
   sshAccess:
     - 0.0.0.0/0
@@ -48,7 +51,7 @@ metadata:
 spec:
   associatePublicIp: true
   iam:
-    profile: arn:aws:iam::422917490108:instance-profile/kops-custom-node-role
+    profile: arn:aws-test:iam::422917490108:instance-profile/kops-custom-node-role
   image: kope.io/k8s-1.4-debian-jessie-amd64-hvm-ebs-2016-10-21
   machineType: t2.medium
   maxSize: 2
@@ -69,7 +72,7 @@ metadata:
 spec:
   associatePublicIp: true
   iam:
-    profile: arn:aws:iam::422917490108:instance-profile/kops-custom-master-role
+    profile: arn:aws-test:iam::422917490108:instance-profile/kops-custom-master-role
   image: kope.io/k8s-1.4-debian-jessie-amd64-hvm-ebs-2016-10-21
   machineType: m3.medium
   maxSize: 1
@@ -77,5 +80,3 @@ spec:
   role: Master
   subnets:
   - us-test-1a
-
-

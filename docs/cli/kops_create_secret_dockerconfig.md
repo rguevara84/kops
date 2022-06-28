@@ -3,53 +3,61 @@
 
 ## kops create secret dockerconfig
 
-Create a docker config.
+Create a Docker config.
 
 ### Synopsis
 
-Create a new docker config, and store it in the state store. Used to configure docker on each master or node (i.e. for auth) Use update to modify it, this command will only create a new entry.
+Create a new Docker config and store it in the state store. Used to configure Docker authentication on each node.
+
+ After creating a dockerconfig secret a /root/.docker/config.json file will be added to newly created nodes. This file will be used by Kubernetes to authenticate to container registries.
+
+ This will also work when using containerd as the container runtime.
 
 ```
-kops create secret dockerconfig [flags]
+kops create secret dockerconfig [CLUSTER] -f FILENAME [flags]
 ```
 
 ### Examples
 
 ```
-  # Create a new docker config.
+  # Create a new Docker config.
   kops create secret dockerconfig -f /path/to/docker/config.json \
-  --name k8s-cluster.example.com --state s3://example.com
+  --name k8s-cluster.example.com --state s3://my-state-store
+  
   # Create a docker config via stdin.
   generate-docker-config.sh | kops create secret dockerconfig -f - \
-  --name k8s-cluster.example.com --state s3://example.com
+  --name k8s-cluster.example.com --state s3://my-state-store
+  
   # Replace an existing docker config secret.
   kops create secret dockerconfig -f /path/to/docker/config.json --force \
-  --name k8s-cluster.example.com --state s3://example.com
+  --name k8s-cluster.example.com --state s3://my-state-store
 ```
 
 ### Options
 
 ```
-  -f, -- string   Path to docker config JSON file
-      --force     Force replace the kops secret if it already exists
-  -h, --help      help for dockerconfig
+  -f, --filename string   Path to Docker config JSON file
+      --force             Force replace the secret if it already exists
+  -h, --help              help for dockerconfig
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
+      --alsologtostderr                  log to standard error as well as files (no effect when -logtostderr=true)
       --config string                    yaml config file (default is $HOME/.kops.yaml)
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --log_file string                  If non-empty, use this log file
-      --log_file_max_size uint           Defines the maximum size a log file can grow to. Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --log_dir string                   If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                  If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint           Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
+      --one_output                       If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when opening log files
+      --skip_log_headers                 If true, avoid headers when opening log files (no effect when -logtostderr=true)
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
+      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=false) (default 2)
   -v, --v Level                          number for the log level verbosity
       --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
 ```

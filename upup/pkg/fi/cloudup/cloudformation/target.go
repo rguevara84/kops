@@ -19,19 +19,17 @@ package cloudformation
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"strings"
 	"sync"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 )
 
 type CloudformationTarget struct {
 	Cloud   fi.Cloud
-	Region  string
 	Project string
 
 	outDir string
@@ -41,10 +39,9 @@ type CloudformationTarget struct {
 	resources map[string]*cloudformationResource
 }
 
-func NewCloudformationTarget(cloud fi.Cloud, region, project string, outDir string) *CloudformationTarget {
+func NewCloudformationTarget(cloud fi.Cloud, project string, outDir string) *CloudformationTarget {
 	return &CloudformationTarget{
 		Cloud:     cloud,
-		Region:    region,
 		Project:   project,
 		outDir:    outDir,
 		resources: make(map[string]*cloudformationResource),
@@ -157,12 +154,12 @@ func (t *CloudformationTarget) Finish(taskMap map[string]fi.Task) error {
 	for relativePath, contents := range files {
 		p := path.Join(t.outDir, relativePath)
 
-		err = os.MkdirAll(path.Dir(p), os.FileMode(0755))
+		err = os.MkdirAll(path.Dir(p), os.FileMode(0o755))
 		if err != nil {
 			return fmt.Errorf("error creating output directory %q: %v", path.Dir(p), err)
 		}
 
-		err = ioutil.WriteFile(p, contents, os.FileMode(0644))
+		err = os.WriteFile(p, contents, os.FileMode(0o644))
 		if err != nil {
 			return fmt.Errorf("error writing cloudformation data to output file %q: %v", p, err)
 		}

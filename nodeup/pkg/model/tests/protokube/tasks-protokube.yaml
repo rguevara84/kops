@@ -1,0 +1,120 @@
+contents: |
+  KUBECONFIG=/var/lib/kops/kubeconfig
+path: /etc/sysconfig/protokube
+type: file
+---
+contents:
+  Asset:
+    AssetPath: /opt/kops/bin/channels
+    Key: channels
+mode: "0755"
+path: /opt/kops/bin/channels
+type: file
+---
+contents:
+  Asset:
+    AssetPath: /opt/kops/bin/protokube
+    Key: protokube
+mode: "0755"
+path: /opt/kops/bin/protokube
+type: file
+---
+contents:
+  task:
+    CA:
+      task:
+        Name: kops
+        keypairID: "3"
+        signer: kubernetes-ca
+        subject:
+          CommonName: kops
+          Organization:
+          - system:masters
+        type: client
+    Cert:
+      task:
+        Name: kops
+        keypairID: "3"
+        signer: kubernetes-ca
+        subject:
+          CommonName: kops
+          Organization:
+          - system:masters
+        type: client
+    Key:
+      task:
+        Name: kops
+        keypairID: "3"
+        signer: kubernetes-ca
+        subject:
+          CommonName: kops
+          Organization:
+          - system:masters
+        type: client
+    Name: kops
+    ServerURL: https://127.0.0.1
+mode: "0400"
+path: /var/lib/kops/kubeconfig
+type: file
+---
+Name: kops
+keypairID: "3"
+signer: kubernetes-ca
+subject:
+  CommonName: kops
+  Organization:
+  - system:masters
+type: client
+---
+CA:
+  task:
+    Name: kops
+    keypairID: "3"
+    signer: kubernetes-ca
+    subject:
+      CommonName: kops
+      Organization:
+      - system:masters
+    type: client
+Cert:
+  task:
+    Name: kops
+    keypairID: "3"
+    signer: kubernetes-ca
+    subject:
+      CommonName: kops
+      Organization:
+      - system:masters
+    type: client
+Key:
+  task:
+    Name: kops
+    keypairID: "3"
+    signer: kubernetes-ca
+    subject:
+      CommonName: kops
+      Organization:
+      - system:masters
+    type: client
+Name: kops
+ServerURL: https://127.0.0.1
+---
+Name: protokube.service
+definition: |
+  [Unit]
+  Description=Kubernetes Protokube Service
+  Documentation=https://kops.sigs.k8s.io
+
+  [Service]
+  ExecStart=/opt/kops/bin/protokube --bootstrap-master-node-labels=true --cloud=aws --cluster-id=minimal.example.com --containerized=false --dns-internal-suffix=.internal.minimal.example.com --master=true --node-name=master.hostname.invalid --v=4 --zone=*/Z1AFAKE1ZON3YO
+  EnvironmentFile=/etc/sysconfig/protokube
+  Restart=always
+  RestartSec=3s
+  StartLimitInterval=0
+
+  [Install]
+  WantedBy=multi-user.target
+enabled: true
+manageState: true
+running: true
+smartRestart: true

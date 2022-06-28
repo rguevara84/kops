@@ -1,8 +1,8 @@
 ---
 name: Bug report
 about: Create a report to help us improve
-
 ---
+/kind bug
 
 **1. What `kops` version are you running? The command `kops version`, will display
  this information.**
@@ -22,6 +22,9 @@ about: Create a report to help us improve
 **7. Please provide your cluster manifest. Execute
   `kops get --name my.example.com -o yaml` to display your cluster manifest.
   You may want to remove your cluster name and other sensitive information.**
+
+```yaml
+```
 
 **8. Please run the commands with most verbose logging by adding the `-v 10` flag.
   Paste the logs into this report, or in a gist and provide the gist link here.**

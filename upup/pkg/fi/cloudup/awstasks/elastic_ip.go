@@ -21,7 +21,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
@@ -29,15 +30,17 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=ElasticIP
-
 // ElasticIP manages an AWS Address (ElasticIP)
+// +kops:fitask
 type ElasticIP struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID       *string
 	PublicIP *string
+
+	// Shared is set if this is a shared IP
+	Shared *bool
 
 	// ElasticIPs don't support tags.  We instead find it via a related resource.
 
@@ -54,19 +57,6 @@ var _ fi.CompareWithID = &ElasticIP{}
 
 func (e *ElasticIP) CompareWithID() *string {
 	return e.ID
-}
-
-var _ fi.HasAddress = &ElasticIP{}
-
-func (e *ElasticIP) FindIPAddress(context *fi.Context) (*string, error) {
-	actual, err := e.find(context.Cloud.(awsup.AWSCloud))
-	if err != nil {
-		return nil, fmt.Errorf("error querying for ElasticIP: %v", err)
-	}
-	if actual == nil {
-		return nil, nil
-	}
-	return actual.PublicIP, nil
 }
 
 // Find returns the actual ElasticIP state, or nil if not found
@@ -146,7 +136,7 @@ func (e *ElasticIP) find(cloud awsup.AWSCloud) (*ElasticIP, error) {
 		}
 
 		if response == nil || len(response.Addresses) == 0 {
-			return nil, nil
+			return nil, fmt.Errorf("found no ElasticIPs for: %v", e)
 		}
 
 		if len(response.Addresses) != 1 {
@@ -189,6 +179,7 @@ func (e *ElasticIP) find(cloud awsup.AWSCloud) (*ElasticIP, error) {
 
 		// Avoid spurious changes
 		actual.Lifecycle = e.Lifecycle
+		actual.Shared = e.Shared
 
 		return actual, nil
 	}
@@ -237,7 +228,9 @@ func (_ *ElasticIP) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *ElasticIP) e
 	if a == nil {
 		klog.V(2).Infof("Creating ElasticIP for VPC")
 
-		request := &ec2.AllocateAddressInput{}
+		request := &ec2.AllocateAddressInput{
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeElasticIp, e.Tags),
+		}
 		request.Domain = aws.String(ec2.DomainTypeVpc)
 
 		response, err := t.Cloud.EC2().AllocateAddress(request)
@@ -252,10 +245,9 @@ func (_ *ElasticIP) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *ElasticIP) e
 	} else {
 		publicIp = a.PublicIP
 		eipId = a.ID
-	}
-
-	if err := t.AddAWSTags(*e.ID, e.Tags); err != nil {
-		return err
+		if err := t.AddAWSTags(*e.ID, e.Tags); err != nil {
+			return err
+		}
 	}
 
 	// Tag the associated subnet
@@ -280,11 +272,19 @@ func (_ *ElasticIP) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *ElasticIP) e
 }
 
 type terraformElasticIP struct {
-	VPC  *bool             `json:"vpc"`
-	Tags map[string]string `json:"tags,omitempty"`
+	VPC  *bool             `cty:"vpc"`
+	Tags map[string]string `cty:"tags"`
 }
 
 func (_ *ElasticIP) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *ElasticIP) error {
+	if fi.BoolValue(e.Shared) {
+		if e.ID == nil {
+			return fmt.Errorf("ID must be set, if ElasticIP is shared: %v", e)
+		}
+		klog.V(4).Infof("reusing existing ElasticIP with id %q", aws.StringValue(e.ID))
+		return nil
+	}
+
 	tf := &terraformElasticIP{
 		VPC:  aws.Bool(true),
 		Tags: e.Tags,
@@ -293,8 +293,15 @@ func (_ *ElasticIP) RenderTerraform(t *terraform.TerraformTarget, a, e, changes 
 	return t.RenderResource("aws_eip", *e.Name, tf)
 }
 
-func (e *ElasticIP) TerraformLink() *terraform.Literal {
-	return terraform.LiteralProperty("aws_eip", *e.Name, "id")
+func (e *ElasticIP) TerraformLink() *terraformWriter.Literal {
+	if fi.BoolValue(e.Shared) {
+		if e.ID == nil {
+			klog.Fatalf("ID must be set, if ElasticIP is shared: %v", e)
+		}
+		return terraformWriter.LiteralFromStringValue(*e.ID)
+	}
+
+	return terraformWriter.LiteralProperty("aws_eip", *e.Name, "id")
 }
 
 type cloudformationElasticIP struct {
@@ -303,6 +310,14 @@ type cloudformationElasticIP struct {
 }
 
 func (_ *ElasticIP) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *ElasticIP) error {
+	if fi.BoolValue(e.Shared) {
+		if e.ID == nil {
+			return fmt.Errorf("ID must be set, if ElasticIP is shared: %v", e)
+		}
+		klog.V(4).Infof("reusing existing ElasticIP with id %q", aws.StringValue(e.ID))
+		return nil
+	}
+
 	tf := &cloudformationElasticIP{
 		Domain: aws.String("vpc"),
 		Tags:   buildCloudformationTags(e.Tags),
@@ -317,5 +332,12 @@ func (_ *ElasticIP) RenderCloudformation(t *cloudformation.CloudformationTarget,
 //}
 
 func (e *ElasticIP) CloudformationAllocationID() *cloudformation.Literal {
+	if fi.BoolValue(e.Shared) {
+		if e.ID == nil {
+			klog.Fatalf("ID must be set, if ElasticIP is shared: %v", e)
+		}
+		return cloudformation.LiteralString(*e.ID)
+	}
+
 	return cloudformation.GetAtt("AWS::EC2::EIP", *e.Name, "AllocationId")
 }

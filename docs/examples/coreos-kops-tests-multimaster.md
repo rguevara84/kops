@@ -47,7 +47,7 @@ export KOPS_STATE_STORE=s3://my-kops-s3-bucket-for-cluster-state
 Some things to note from here:
 
 - "NAME" will be an environment variable that we'll use from now in order to refer to our cluster name. For this practical exercise, our cluster name is "coreosbasedkopscluster.k8s.local".
-- Because we'll use gossip DNS instead of a valid DNS domain on AWS ROUTE53 service, our cluster name needs to include the string **".k8s.local"** at the end (this is covered on our AWS tutorials). You can see more about this on our [Getting Started Doc.](https://github.com/kubernetes/kops/blob/master/docs/getting_started/aws.md)
+- Because we'll use gossip DNS instead of a valid DNS domain on AWS ROUTE53 service, our cluster name needs to include the string **".k8s.local"** at the end (this is covered on our AWS tutorials). You can see more about this on our [Getting Started Doc.](../getting_started/aws.md)
 
 
 ## COREOS IMAGE INFORMATION:
@@ -111,7 +111,7 @@ aws ec2 describe-images --image-id ami-32705b49 --output table
 ||+----------------------------------+---------------------------------+||
 ```
 
-Also, you can obtaing the image owner/name using the following aws-cli command:
+Also, you can obtain the image owner/name using the following aws-cli command:
 
 ```bash
 aws ec2 describe-images --region=us-east-1 --owner=595879546273 \
@@ -196,7 +196,7 @@ If you don't want KOPS to auto-select the instance type, you can use the followi
 
 But, before doing that, always ensure the instance types are available on your desired AZ.
 
-NOTE: More arguments and kops commands are described on the following document: [commands.md](https://github.com/kubernetes/kops/blob/master/docs/commands.md)
+NOTE: More arguments and kOps commands are described [here](../cli/kops.md).
 
 Let's continue exploring our cluster, but now with "kubectl":
 

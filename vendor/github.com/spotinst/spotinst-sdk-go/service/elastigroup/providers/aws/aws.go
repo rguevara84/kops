@@ -132,7 +132,7 @@ type AutoScale struct {
 }
 
 type AutoScaleECS struct {
-	AutoScale                                             // embedding
+	AutoScale
 	Attributes                     []*AutoScaleAttributes `json:"attributes,omitempty"`
 	ShouldScaleDownNonServiceTasks *bool                  `json:"shouldScaleDownNonServiceTasks,omitempty"`
 
@@ -141,15 +141,15 @@ type AutoScaleECS struct {
 }
 
 type AutoScaleKubernetes struct {
-	AutoScale                   // embedding
-	Labels    []*AutoScaleLabel `json:"labels,omitempty"`
+	AutoScale
+	Labels []*AutoScaleLabel `json:"labels,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
 }
 
 type AutoScaleNomad struct {
-	AutoScale                          // embedding
+	AutoScale
 	Constraints []*AutoScaleConstraint `json:"constraints,omitempty"`
 
 	forceSendFields []string
@@ -157,7 +157,7 @@ type AutoScaleNomad struct {
 }
 
 type AutoScaleDockerSwarm struct {
-	AutoScale // embedding
+	AutoScale
 
 	forceSendFields []string
 	nullFields      []string
@@ -174,8 +174,8 @@ type AutoScaleHeadroom struct {
 }
 
 type AutoScaleDown struct {
-	EvaluationPeriods      *int `json:"evaluationPeriods,omitempty"`
-	MaxScaleDownPercentage *int `json:"maxScaleDownPercentage,omitempty"`
+	EvaluationPeriods      *int     `json:"evaluationPeriods,omitempty"`
+	MaxScaleDownPercentage *float64 `json:"maxScaleDownPercentage,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -286,6 +286,14 @@ type RancherIntegration struct {
 type EC2ContainerServiceIntegration struct {
 	ClusterName *string       `json:"clusterName,omitempty"`
 	AutoScale   *AutoScaleECS `json:"autoScale,omitempty"`
+	Batch       *Batch        `json:"batch,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type Batch struct {
+	JobQueueNames []string `json:"jobQueueNames,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -356,6 +364,7 @@ type Route53Integration struct {
 type Domain struct {
 	HostedZoneID      *string      `json:"hostedZoneId,omitempty"`
 	SpotinstAccountID *string      `json:"spotinstAccountId,omitempty"`
+	RecordSetType     *string      `json:"recordSetType,omitempty"`
 	RecordSets        []*RecordSet `json:"recordSets,omitempty"`
 
 	forceSendFields []string
@@ -363,8 +372,9 @@ type Domain struct {
 }
 
 type RecordSet struct {
-	UsePublicIP *bool   `json:"usePublicIp,omitempty"`
-	Name        *string `json:"name,omitempty"`
+	Name         *string `json:"name,omitempty"`
+	UsePublicIP  *bool   `json:"usePublicIp,omitempty"`
+	UsePublicDNS *bool   `json:"usePublicDns,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -413,33 +423,66 @@ type Task struct {
 }
 
 type Scaling struct {
-	Up     []*ScalingPolicy `json:"up,omitempty"`
-	Down   []*ScalingPolicy `json:"down,omitempty"`
-	Target []*ScalingPolicy `json:"target,omitempty"`
+	Up              []*ScalingPolicy `json:"up,omitempty"`
+	Down            []*ScalingPolicy `json:"down,omitempty"`
+	Target          []*ScalingPolicy `json:"target,omitempty"`
+	MultipleMetrics *MultipleMetrics `json:"multipleMetrics,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type MultipleMetrics struct {
+	Metrics     []*Metrics     `json:"metrics,omitempty"`
+	Expressions []*Expressions `json:"expressions,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
 }
 
 type ScalingPolicy struct {
-	PolicyName        *string      `json:"policyName,omitempty"`
+	PolicyName          *string           `json:"policyName,omitempty"`
+	MetricName          *string           `json:"metricName,omitempty"`
+	Namespace           *string           `json:"namespace,omitempty"`
+	Source              *string           `json:"source,omitempty"`
+	Statistic           *string           `json:"statistic,omitempty"`
+	Unit                *string           `json:"unit,omitempty"`
+	Threshold           *float64          `json:"threshold,omitempty"`
+	Adjustment          *int              `json:"adjustment,omitempty"`
+	MinTargetCapacity   *int              `json:"minTargetCapacity,omitempty"`
+	MaxTargetCapacity   *int              `json:"maxTargetCapacity,omitempty"`
+	EvaluationPeriods   *int              `json:"evaluationPeriods,omitempty"`
+	Period              *int              `json:"period,omitempty"`
+	Cooldown            *int              `json:"cooldown,omitempty"`
+	Operator            *string           `json:"operator,omitempty"`
+	Dimensions          []*Dimension      `json:"dimensions,omitempty"`
+	Action              *Action           `json:"action,omitempty"`
+	Target              *float64          `json:"target,omitempty"`
+	IsEnabled           *bool             `json:"isEnabled,omitempty"`
+	MaxCapacityPerScale *string           `json:"maxCapacityPerScale,omitempty"`
+	Predictive          *Predictive       `json:"predictive,omitempty"`
+	StepAdjustments     []*StepAdjustment `json:"stepAdjustments,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type Metrics struct {
+	Name              *string      `json:"name,omitempty"`
 	MetricName        *string      `json:"metricName,omitempty"`
 	Namespace         *string      `json:"namespace,omitempty"`
-	Source            *string      `json:"source,omitempty"`
+	Dimensions        []*Dimension `json:"dimensions,omitempty"`
+	ExtendedStatistic *string      `json:"extendedStatistic,omitempty"`
 	Statistic         *string      `json:"statistic,omitempty"`
 	Unit              *string      `json:"unit,omitempty"`
-	Threshold         *float64     `json:"threshold,omitempty"`
-	Adjustment        *int         `json:"adjustment,omitempty"`
-	MinTargetCapacity *int         `json:"minTargetCapacity,omitempty"`
-	MaxTargetCapacity *int         `json:"maxTargetCapacity,omitempty"`
-	EvaluationPeriods *int         `json:"evaluationPeriods,omitempty"`
-	Period            *int         `json:"period,omitempty"`
-	Cooldown          *int         `json:"cooldown,omitempty"`
-	Operator          *string      `json:"operator,omitempty"`
-	Dimensions        []*Dimension `json:"dimensions,omitempty"`
-	Action            *Action      `json:"action,omitempty"`
-	Target            *float64     `json:"target,omitempty"`
-	IsEnabled         *bool        `json:"isEnabled,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type Expressions struct {
+	Expression *string `json:"expression,omitempty"`
+	Name       *string `json:"name,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -466,6 +509,21 @@ type Dimension struct {
 	nullFields      []string
 }
 
+type Predictive struct {
+	Mode *string `json:"mode,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type StepAdjustment struct {
+	Action    *Action `json:"action,omitempty"`
+	Threshold *int    `json:"threshold,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
 type Strategy struct {
 	Risk                     *float64         `json:"risk,omitempty"`
 	OnDemandCount            *int             `json:"onDemandCount,omitempty"`
@@ -479,6 +537,8 @@ type Strategy struct {
 	Persistence              *Persistence     `json:"persistence,omitempty"`
 	RevertToSpot             *RevertToSpot    `json:"revertToSpot,omitempty"`
 	ScalingStrategy          *ScalingStrategy `json:"scalingStrategy,omitempty"`
+	UtilizeCommitments       *bool            `json:"utilizeCommitments,omitempty"`
+	MinimumInstanceLifetime  *int             `json:"minimumInstanceLifetime,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -579,24 +639,144 @@ type AvailabilityZone struct {
 }
 
 type LaunchSpecification struct {
-	LoadBalancerNames                             []string              `json:"loadBalancerNames,omitempty"`
-	LoadBalancersConfig                           *LoadBalancersConfig  `json:"loadBalancersConfig,omitempty"`
-	SecurityGroupIDs                              []string              `json:"securityGroupIds,omitempty"`
-	HealthCheckType                               *string               `json:"healthCheckType,omitempty"`
-	HealthCheckGracePeriod                        *int                  `json:"healthCheckGracePeriod,omitempty"`
-	HealthCheckUnhealthyDurationBeforeReplacement *int                  `json:"healthCheckUnhealthyDurationBeforeReplacement,omitempty"`
-	ImageID                                       *string               `json:"imageId,omitempty"`
-	KeyPair                                       *string               `json:"keyPair,omitempty"`
-	UserData                                      *string               `json:"userData,omitempty"`
-	ShutdownScript                                *string               `json:"shutdownScript,omitempty"`
-	Tenancy                                       *string               `json:"tenancy,omitempty"`
-	Monitoring                                    *bool                 `json:"monitoring,omitempty"`
-	EBSOptimized                                  *bool                 `json:"ebsOptimized,omitempty"`
-	IAMInstanceProfile                            *IAMInstanceProfile   `json:"iamRole,omitempty"`
-	CreditSpecification                           *CreditSpecification  `json:"creditSpecification,omitempty"`
-	BlockDeviceMappings                           []*BlockDeviceMapping `json:"blockDeviceMappings,omitempty"`
-	NetworkInterfaces                             []*NetworkInterface   `json:"networkInterfaces,omitempty"`
-	Tags                                          []*Tag                `json:"tags,omitempty"`
+	LoadBalancerNames                             []string                  `json:"loadBalancerNames,omitempty"`
+	LoadBalancersConfig                           *LoadBalancersConfig      `json:"loadBalancersConfig,omitempty"`
+	SecurityGroupIDs                              []string                  `json:"securityGroupIds,omitempty"`
+	HealthCheckType                               *string                   `json:"healthCheckType,omitempty"`
+	HealthCheckGracePeriod                        *int                      `json:"healthCheckGracePeriod,omitempty"`
+	HealthCheckUnhealthyDurationBeforeReplacement *int                      `json:"healthCheckUnhealthyDurationBeforeReplacement,omitempty"`
+	ImageID                                       *string                   `json:"imageId,omitempty"`
+	KeyPair                                       *string                   `json:"keyPair,omitempty"`
+	UserData                                      *string                   `json:"userData,omitempty"`
+	ShutdownScript                                *string                   `json:"shutdownScript,omitempty"`
+	Tenancy                                       *string                   `json:"tenancy,omitempty"`
+	Monitoring                                    *bool                     `json:"monitoring,omitempty"`
+	EBSOptimized                                  *bool                     `json:"ebsOptimized,omitempty"`
+	IAMInstanceProfile                            *IAMInstanceProfile       `json:"iamRole,omitempty"`
+	CreditSpecification                           *CreditSpecification      `json:"creditSpecification,omitempty"`
+	BlockDeviceMappings                           []*BlockDeviceMapping     `json:"blockDeviceMappings,omitempty"`
+	NetworkInterfaces                             []*NetworkInterface       `json:"networkInterfaces,omitempty"`
+	Tags                                          []*Tag                    `json:"tags,omitempty"`
+	MetadataOptions                               *MetadataOptions          `json:"metadataOptions,omitempty"`
+	CPUOptions                                    *CPUOptions               `json:"cpuOptions,omitempty"`
+	ResourceTagSpecification                      *ResourceTagSpecification `json:"resourceTagSpecification,omitempty"`
+	ITF                                           *ITF                      `json:"itf,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type ITF struct {
+	LoadBalancers                 []*ITFLoadBalancer   `json:"loadBalancers,omitempty"`
+	MigrationHealthinessThreshold *int                 `json:"migrationHealthinessThreshold,omitempty"`
+	FixedTargetGroups             *bool                `json:"fixedTargetGroups,omitempty"`
+	WeightStrategy                *string              `json:"weightStrategy,omitempty"`
+	TargetGroupConfig             *TargetGroupConfig   `json:"targetGroupConfig,omitempty"`
+	DefaultStaticTargetGroups     []*StaticTargetGroup `json:"defaultStaticTargetGroups,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type ITFLoadBalancer struct {
+	ListenerRules   []*ListenerRule `json:"listenerRules,omitempty"`
+	LoadBalancerARN *string         `json:"loadBalancerArn,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type ListenerRule struct {
+	RuleARN            *string              `json:"ruleArn,omitempty"`
+	StaticTargetGroups []*StaticTargetGroup `json:"staticTargetGroups,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type StaticTargetGroup struct {
+	StaticTargetGroupARN *string  `json:"arn,omitempty"`
+	Percentage           *float64 `json:"percentage,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type TargetGroupConfig struct {
+	VPCID                      *string  `json:"vpcId,omitempty"`
+	HealthCheckIntervalSeconds *int     `json:"healthCheckIntervalSeconds,omitempty"`
+	HealthCheckPath            *string  `json:"healthCheckPath,omitempty"`
+	HealthCheckPort            *string  `json:"healthCheckPort,omitempty"`
+	HealthCheckProtocol        *string  `json:"healthCheckProtocol,omitempty"`
+	HealthCheckTimeoutSeconds  *int     `json:"healthCheckTimeoutSeconds,omitempty"`
+	HealthyThresholdCount      *int     `json:"healthyThresholdCount,omitempty"`
+	UnhealthyThresholdCount    *int     `json:"unhealthyThresholdCount,omitempty"`
+	Port                       *int     `json:"port,omitempty"`
+	Protocol                   *string  `json:"protocol,omitempty"`
+	ProtocolVersion            *string  `json:"protocolVersion,omitempty"`
+	Matcher                    *Matcher `json:"matcher,omitempty"`
+	Tags                       []*Tag   `json:"tags,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type Matcher struct {
+	HTTPCode *string `json:"httpCode,omitempty"`
+	GRPCCode *string `json:"grpcCode,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type MetadataOptions struct {
+	HTTPTokens              *string `json:"httpTokens,omitempty"`
+	HTTPPutResponseHopLimit *int    `json:"httpPutResponseHopLimit,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type CPUOptions struct {
+	ThreadsPerCore *int `json:"threadsPerCore,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type ResourceTagSpecification struct {
+	Volumes   *Volumes   `json:"volumes,omitempty"`
+	Snapshots *Snapshots `json:"snapshots,omitempty"`
+	ENIs      *ENIs      `json:"enis,omitempty"`
+	AMIs      *AMIs      `json:"amis,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type Volumes struct {
+	ShouldTag *bool `json:"shouldTag,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type Snapshots struct {
+	ShouldTag *bool `json:"shouldTag,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type ENIs struct {
+	ShouldTag *bool `json:"shouldTag,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type AMIs struct {
+	ShouldTag *bool `json:"shouldTag,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -655,6 +835,7 @@ type EBS struct {
 	VolumeType          *string `json:"volumeType,omitempty"`
 	VolumeSize          *int    `json:"volumeSize,omitempty"`
 	IOPS                *int    `json:"iops,omitempty"`
+	Throughput          *int    `json:"throughput,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -688,9 +869,21 @@ type Instance struct {
 }
 
 type RollStrategy struct {
-	Action                    *string `json:"action,omitempty"`
-	ShouldDrainInstances      *bool   `json:"shouldDrainInstances,omitempty"`
-	BatchMinHealthyPercentage *int    `json:"batchMinHealthyPercentage,omitempty"`
+	Action                    *string    `json:"action,omitempty"`
+	ShouldDrainInstances      *bool      `json:"shouldDrainInstances,omitempty"`
+	BatchMinHealthyPercentage *int       `json:"batchMinHealthyPercentage,omitempty"`
+	OnFailure                 *OnFailure `json:"onFailure,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type OnFailure struct {
+	ActionType                    *string `json:"actionType,omitempty"`
+	ShouldHandleAllBatches        *bool   `json:"shouldHandleAllBatches,omitempty"`
+	BatchNum                      *int    `json:"batchNum,omitempty"`
+	DrainingTimeout               *int    `json:"drainingTimeout,omitempty"`
+	ShouldDecrementTargetCapacity *bool   `json:"shouldDecrementTargetCapacity,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -777,6 +970,29 @@ type NewInstance struct {
 type TerminatedInstance struct {
 }
 
+type StatefulInstance struct {
+	StatefulInstanceID *string   `json:"id,omitempty"`
+	InstanceID         *string   `json:"instanceId,omitempty"`
+	State              *string   `json:"state,omitempty"`
+	PrivateIP          *string   `json:"privateIp,omitempty"`
+	ImageID            *string   `json:"imageId,omitempty"`
+	Devices            []*Device `json:"devices,omitempty"`
+	CreatedAt          *string   `json:"createdAt,omitempty"`
+	LaunchedAt         *string   `json:"launchedAt,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type Device struct {
+	DeviceName *string `json:"deviceName,omitempty"`
+	VolumeID   *string `json:"volumeId,omitempty"`
+	SnapshotID *string `json:"snapshotId,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
 type ListGroupsInput struct{}
 
 type ListGroupsOutput struct {
@@ -839,12 +1055,26 @@ type DeploymentStatusInput struct {
 	RollID  *string `json:"id,omitempty"`
 }
 
+type Roll struct {
+	Status *string `json:"status,omitempty"`
+}
+
 type RollGroupInput struct {
 	GroupID             *string       `json:"groupId,omitempty"`
 	BatchSizePercentage *int          `json:"batchSizePercentage,omitempty"`
 	GracePeriod         *int          `json:"gracePeriod,omitempty"`
 	HealthCheckType     *string       `json:"healthCheckType,omitempty"`
 	Strategy            *RollStrategy `json:"strategy,omitempty"`
+}
+
+type RollECSGroupInput struct {
+	GroupID *string         `json:"groupId,omitempty"`
+	Roll    *RollECSWrapper `json:"roll,omitempty"`
+}
+
+type RollECSWrapper struct {
+	BatchSizePercentage *int    `json:"batchSizePercentage,omitempty"`
+	Comment             *string `json:"comment,omitempty"`
 }
 
 type RollGroupOutput struct {
@@ -860,9 +1090,53 @@ type RollGroupStatus struct {
 }
 
 type Progress struct {
-	Unit  *string `json:"unit,omitempty"`
-	Value *int    `json:"value,omitempty"`
+	Unit  *string  `json:"unit,omitempty"`
+	Value *float64 `json:"value,omitempty"`
 }
+
+type StopDeploymentInput struct {
+	GroupID *string `json:"groupId,omitempty"`
+	RollID  *string `json:"id,omitempty"`
+	Roll    *Roll   `json:"roll,omitempty"`
+}
+
+type StopDeploymentOutput struct{}
+
+type ListStatefulInstancesInput struct {
+	GroupID *string `json:"groupId,omitempty"`
+}
+
+type ListStatefulInstancesOutput struct {
+	StatefulInstances []*StatefulInstance `json:"statefulInstances,omitempty"`
+}
+
+type PauseStatefulInstanceInput struct {
+	GroupID            *string `json:"groupId,omitempty"`
+	StatefulInstanceID *string `json:"statefulInstanceId,omitempty"`
+}
+
+type PauseStatefulInstanceOutput struct{}
+
+type ResumeStatefulInstanceInput struct {
+	GroupID            *string `json:"groupId,omitempty"`
+	StatefulInstanceID *string `json:"statefulInstanceId,omitempty"`
+}
+
+type ResumeStatefulInstanceOutput struct{}
+
+type RecycleStatefulInstanceInput struct {
+	GroupID            *string `json:"groupId,omitempty"`
+	StatefulInstanceID *string `json:"statefulInstanceId,omitempty"`
+}
+
+type RecycleStatefulInstanceOutput struct{}
+
+type DeallocateStatefulInstanceInput struct {
+	GroupID            *string `json:"groupId,omitempty"`
+	StatefulInstanceID *string `json:"statefulInstanceId,omitempty"`
+}
+
+type DeallocateStatefulInstanceOutput struct{}
 
 func deploymentStatusFromJSON(in []byte) (*RollGroupStatus, error) {
 	b := new(RollGroupStatus)
@@ -1037,6 +1311,41 @@ func groupEventsFromHttpResponse(resp *http.Response) ([]*GroupEvent, error) {
 		return nil, err
 	}
 	return groupEventsFromJSON(body)
+}
+
+func StatefulInstanceFromJSON(in []byte) (*StatefulInstance, error) {
+	b := new(StatefulInstance)
+	if err := json.Unmarshal(in, b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
+func statefulInstancesFromJSON(in []byte) ([]*StatefulInstance, error) {
+	var rw client.Response
+	if err := json.Unmarshal(in, &rw); err != nil {
+		return nil, err
+	}
+	out := make([]*StatefulInstance, len(rw.Response.Items))
+	if len(out) == 0 {
+		return out, nil
+	}
+	for i, rb := range rw.Response.Items {
+		b, err := StatefulInstanceFromJSON(rb)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = b
+	}
+	return out, nil
+}
+
+func statefulInstancesFromHttpResponse(resp *http.Response) ([]*StatefulInstance, error) {
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return statefulInstancesFromJSON(body)
 }
 
 func (s *ServiceOp) List(ctx context.Context, input *ListGroupsInput) (*ListGroupsOutput, error) {
@@ -1222,6 +1531,59 @@ func (s *ServiceOp) DeploymentStatus(ctx context.Context, input *DeploymentStatu
 	return &RollGroupOutput{deployments}, nil
 }
 
+func (s *ServiceOp) DeploymentStatusECS(ctx context.Context, input *DeploymentStatusInput) (*RollGroupOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/clusterRoll/{rollId}", uritemplates.Values{
+		"groupId": spotinst.StringValue(input.GroupID),
+		"rollId":  spotinst.StringValue(input.RollID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r := client.NewRequest(http.MethodGet, path)
+
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	deployments, err := deploymentStatusFromHttpResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RollGroupOutput{deployments}, nil
+}
+
+func (s *ServiceOp) StopDeployment(ctx context.Context, input *StopDeploymentInput) (*StopDeploymentOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/roll/{rollId}", uritemplates.Values{
+		"groupId": spotinst.StringValue(input.GroupID),
+		"rollId":  spotinst.StringValue(input.RollID),
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	input.GroupID = nil
+	input.RollID = nil
+
+	r := client.NewRequest(http.MethodPut, path)
+	input.Roll = &Roll{
+		Status: spotinst.String("STOPPED"),
+	}
+	r.Obj = input
+
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return &StopDeploymentOutput{}, nil
+}
+
 func (s *ServiceOp) Detach(ctx context.Context, input *DetachGroupInput) (*DetachGroupOutput, error) {
 	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/detachInstances", uritemplates.Values{
 		"groupId": spotinst.StringValue(input.GroupID),
@@ -1257,6 +1619,34 @@ func (s *ServiceOp) Roll(ctx context.Context, input *RollGroupInput) (*RollGroup
 	input.GroupID = nil
 
 	r := client.NewRequest(http.MethodPut, path)
+	r.Obj = input
+
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	deployments, err := deploymentStatusFromHttpResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RollGroupOutput{deployments}, nil
+}
+
+func (s *ServiceOp) RollECS(ctx context.Context, input *RollECSGroupInput) (*RollGroupOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/clusterRoll", uritemplates.Values{
+		"groupId": spotinst.StringValue(input.GroupID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// We do not need the ID anymore so let's drop it.
+	input.GroupID = nil
+
+	r := client.NewRequest(http.MethodPost, path)
 	r.Obj = input
 
 	resp, err := client.RequireOK(s.Client.Do(ctx, r))
@@ -1322,6 +1712,108 @@ func (s *ServiceOp) GetGroupEvents(ctx context.Context, input *GetGroupEventsInp
 		return nil, err
 	}
 	return &GetGroupEventsOutput{GroupEvents: events}, nil
+}
+
+func (s *ServiceOp) ListStatefulInstances(ctx context.Context, input *ListStatefulInstancesInput) (*ListStatefulInstancesOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/statefulInstance", uritemplates.Values{
+		"groupId": spotinst.StringValue(input.GroupID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// We do not need the group ID anymore so let's drop it.
+	input.GroupID = nil
+
+	r := client.NewRequest(http.MethodGet, path)
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	statefulInstances, err := statefulInstancesFromHttpResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ListStatefulInstancesOutput{StatefulInstances: statefulInstances}, nil
+}
+
+func (s *ServiceOp) PauseStatefulInstance(ctx context.Context, input *PauseStatefulInstanceInput) (*PauseStatefulInstanceOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/statefulInstance/{statefulInstanceId}/pause", uritemplates.Values{
+		"groupId":            spotinst.StringValue(input.GroupID),
+		"statefulInstanceId": spotinst.StringValue(input.StatefulInstanceID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r := client.NewRequest(http.MethodPut, path)
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return &PauseStatefulInstanceOutput{}, nil
+}
+
+func (s *ServiceOp) ResumeStatefulInstance(ctx context.Context, input *ResumeStatefulInstanceInput) (*ResumeStatefulInstanceOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/statefulInstance/{statefulInstanceId}/resume", uritemplates.Values{
+		"groupId":            spotinst.StringValue(input.GroupID),
+		"statefulInstanceId": spotinst.StringValue(input.StatefulInstanceID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r := client.NewRequest(http.MethodPut, path)
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return &ResumeStatefulInstanceOutput{}, nil
+}
+
+func (s *ServiceOp) RecycleStatefulInstance(ctx context.Context, input *RecycleStatefulInstanceInput) (*RecycleStatefulInstanceOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/statefulInstance/{statefulInstanceId}/recycle", uritemplates.Values{
+		"groupId":            spotinst.StringValue(input.GroupID),
+		"statefulInstanceId": spotinst.StringValue(input.StatefulInstanceID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r := client.NewRequest(http.MethodPut, path)
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return &RecycleStatefulInstanceOutput{}, nil
+}
+
+func (s *ServiceOp) DeallocateStatefulInstance(ctx context.Context, input *DeallocateStatefulInstanceInput) (*DeallocateStatefulInstanceOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/statefulInstance/{statefulInstanceId}/deallocate", uritemplates.Values{
+		"groupId":            spotinst.StringValue(input.GroupID),
+		"statefulInstanceId": spotinst.StringValue(input.StatefulInstanceID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r := client.NewRequest(http.MethodPut, path)
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return &DeallocateStatefulInstanceOutput{}, nil
 }
 
 // region Elastic Beanstalk
@@ -1854,17 +2346,28 @@ func (o *EC2ContainerServiceIntegration) SetClusterName(v *string) *EC2Container
 	return o
 }
 
-func (o AutoScaleECS) MarshalJSON() ([]byte, error) {
-	type noMethod AutoScaleECS
-	raw := noMethod(o)
-	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
-}
-
 func (o *EC2ContainerServiceIntegration) SetAutoScale(v *AutoScaleECS) *EC2ContainerServiceIntegration {
 	if o.AutoScale = v; o.AutoScale == nil {
 		o.nullFields = append(o.nullFields, "AutoScale")
 	}
 	return o
+}
+
+func (o *EC2ContainerServiceIntegration) SetBatch(v *Batch) *EC2ContainerServiceIntegration {
+	if o.Batch = v; o.Batch == nil {
+		o.nullFields = append(o.nullFields, "Batch")
+	}
+	return o
+}
+
+// endregion
+
+// region AutoScaleECS
+
+func (o AutoScaleECS) MarshalJSON() ([]byte, error) {
+	type noMethod AutoScaleECS
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
 }
 
 func (o *AutoScaleECS) SetAttributes(v []*AutoScaleAttributes) *AutoScaleECS {
@@ -1883,7 +2386,24 @@ func (o *AutoScaleECS) SetShouldScaleDownNonServiceTasks(v *bool) *AutoScaleECS 
 
 // endregion
 
-// region Docker Swarm
+// region Batch
+
+func (o Batch) MarshalJSON() ([]byte, error) {
+	type noMethod Batch
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Batch) SetJobQueueNames(v []string) *Batch {
+	if o.JobQueueNames = v; o.JobQueueNames == nil {
+		o.nullFields = append(o.nullFields, "JobQueueNames")
+	}
+	return o
+}
+
+// endregion
+
+// region DockerSwarmIntegration
 
 func (o DockerSwarmIntegration) MarshalJSON() ([]byte, error) {
 	type noMethod DockerSwarmIntegration
@@ -1959,6 +2479,13 @@ func (o *Domain) SetSpotinstAccountID(v *string) *Domain {
 	return o
 }
 
+func (o *Domain) SetRecordSetType(v *string) *Domain {
+	if o.RecordSetType = v; o.RecordSetType == nil {
+		o.nullFields = append(o.nullFields, "RecordSetType")
+	}
+	return o
+}
+
 func (o *Domain) SetRecordSets(v []*RecordSet) *Domain {
 	if o.RecordSets = v; o.RecordSets == nil {
 		o.nullFields = append(o.nullFields, "RecordSets")
@@ -1976,6 +2503,13 @@ func (o RecordSet) MarshalJSON() ([]byte, error) {
 	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
 }
 
+func (o *RecordSet) SetName(v *string) *RecordSet {
+	if o.Name = v; o.Name == nil {
+		o.nullFields = append(o.nullFields, "Name")
+	}
+	return o
+}
+
 func (o *RecordSet) SetUsePublicIP(v *bool) *RecordSet {
 	if o.UsePublicIP = v; o.UsePublicIP == nil {
 		o.nullFields = append(o.nullFields, "UsePublicIP")
@@ -1983,9 +2517,9 @@ func (o *RecordSet) SetUsePublicIP(v *bool) *RecordSet {
 	return o
 }
 
-func (o *RecordSet) SetName(v *string) *RecordSet {
-	if o.Name = v; o.Name == nil {
-		o.nullFields = append(o.nullFields, "Name")
+func (o *RecordSet) SetUsePublicDNS(v *bool) *RecordSet {
+	if o.UsePublicDNS = v; o.UsePublicDNS == nil {
+		o.nullFields = append(o.nullFields, "UsePublicDNS")
 	}
 	return o
 }
@@ -2090,7 +2624,7 @@ func (o *AutoScaleDown) SetEvaluationPeriods(v *int) *AutoScaleDown {
 	return o
 }
 
-func (o *AutoScaleDown) SetMaxScaleDownPercentage(v *int) *AutoScaleDown {
+func (o *AutoScaleDown) SetMaxScaleDownPercentage(v *float64) *AutoScaleDown {
 	if o.MaxScaleDownPercentage = v; o.MaxScaleDownPercentage == nil {
 		o.nullFields = append(o.nullFields, "MaxScaleDownPercentage")
 	}
@@ -2526,6 +3060,13 @@ func (o *Scaling) SetTarget(v []*ScalingPolicy) *Scaling {
 	return o
 }
 
+func (o *Scaling) SetMultipleMetrics(v *MultipleMetrics) *Scaling {
+	if o.MultipleMetrics = v; o.MultipleMetrics == nil {
+		o.nullFields = append(o.nullFields, "MultipleMetrics")
+	}
+	return o
+}
+
 // endregion
 
 // region ScalingPolicy
@@ -2641,6 +3182,13 @@ func (o *ScalingPolicy) SetDimensions(v []*Dimension) *ScalingPolicy {
 	return o
 }
 
+func (o *ScalingPolicy) SetPredictive(v *Predictive) *ScalingPolicy {
+	if o.Predictive = v; o.Predictive == nil {
+		o.nullFields = append(o.nullFields, "Predictive")
+	}
+	return o
+}
+
 func (o *ScalingPolicy) SetAction(v *Action) *ScalingPolicy {
 	if o.Action = v; o.Action == nil {
 		o.nullFields = append(o.nullFields, "Action")
@@ -2658,6 +3206,127 @@ func (o *ScalingPolicy) SetTarget(v *float64) *ScalingPolicy {
 func (o *ScalingPolicy) SetIsEnabled(v *bool) *ScalingPolicy {
 	if o.IsEnabled = v; o.IsEnabled == nil {
 		o.nullFields = append(o.nullFields, "IsEnabled")
+	}
+	return o
+}
+
+func (o *ScalingPolicy) SetMaxCapacityPerScale(v *string) *ScalingPolicy {
+	if o.MaxCapacityPerScale = v; o.MaxCapacityPerScale == nil {
+		o.nullFields = append(o.nullFields, "MaxCapacityPerScale")
+	}
+	return o
+}
+
+func (o *ScalingPolicy) SetStepAdjustments(v []*StepAdjustment) *ScalingPolicy {
+	if o.StepAdjustments = v; o.StepAdjustments == nil {
+		o.nullFields = append(o.nullFields, "StepAdjustments")
+	}
+	return o
+}
+
+// endregion
+
+// region MultipleMetrics
+
+func (o MultipleMetrics) MarshalJSON() ([]byte, error) {
+	type noMethod MultipleMetrics
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *MultipleMetrics) SetExpressions(v []*Expressions) *MultipleMetrics {
+	if o.Expressions = v; o.Expressions == nil {
+		o.nullFields = append(o.nullFields, "Expressions")
+	}
+	return o
+}
+
+func (o *MultipleMetrics) SetMetrics(v []*Metrics) *MultipleMetrics {
+	if o.Metrics = v; o.Metrics == nil {
+		o.nullFields = append(o.nullFields, "Metrics")
+	}
+	return o
+}
+
+// endregion
+
+// region Metrics
+
+func (o Metrics) MarshalJSON() ([]byte, error) {
+	type noMethod Metrics
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Metrics) SetMetricName(v *string) *Metrics {
+	if o.MetricName = v; o.MetricName == nil {
+		o.nullFields = append(o.nullFields, "MetricName")
+	}
+	return o
+}
+
+func (o *Metrics) SetNamespace(v *string) *Metrics {
+	if o.Namespace = v; o.Namespace == nil {
+		o.nullFields = append(o.nullFields, "Namespace")
+	}
+	return o
+}
+
+func (o *Metrics) SetDimensions(v []*Dimension) *Metrics {
+	if o.Dimensions = v; o.Dimensions == nil {
+		o.nullFields = append(o.nullFields, "Dimensions")
+	}
+	return o
+}
+
+func (o *Metrics) SetName(v *string) *Metrics {
+	if o.Name = v; o.Name == nil {
+		o.nullFields = append(o.nullFields, "Name")
+	}
+	return o
+}
+
+func (o *Metrics) SetExtendedStatistic(v *string) *Metrics {
+	if o.ExtendedStatistic = v; o.ExtendedStatistic == nil {
+		o.nullFields = append(o.nullFields, "ExtendedStatistic")
+	}
+	return o
+}
+
+func (o *Metrics) SetStatistic(v *string) *Metrics {
+	if o.Statistic = v; o.Statistic == nil {
+		o.nullFields = append(o.nullFields, "Statistic")
+	}
+	return o
+}
+
+func (o *Metrics) SetUnit(v *string) *Metrics {
+	if o.Unit = v; o.Unit == nil {
+		o.nullFields = append(o.nullFields, "Unit")
+	}
+	return o
+}
+
+// endregion
+
+// region Expression
+
+func (o Expressions) MarshalJSON() ([]byte, error) {
+	type noMethod Expressions
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Expressions) SetExpression(v *string) *Expressions {
+	if o.Expression = v; o.Expression == nil {
+		o.nullFields = append(o.nullFields, "Expression")
+	}
+	return o
+}
+
+func (o *Expressions) SetName(v *string) *Expressions {
+	if o.Name = v; o.Name == nil {
+		o.nullFields = append(o.nullFields, "Name")
 	}
 	return o
 }
@@ -2741,6 +3410,47 @@ func (o *Dimension) SetName(v *string) *Dimension {
 func (o *Dimension) SetValue(v *string) *Dimension {
 	if o.Value = v; o.Value == nil {
 		o.nullFields = append(o.nullFields, "Value")
+	}
+	return o
+}
+
+// endregion
+
+// region Predictive
+
+func (o *Predictive) MarshalJSON() ([]byte, error) {
+	type noMethod Predictive
+	raw := noMethod(*o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Predictive) SetMode(v *string) *Predictive {
+	if o.Mode = v; o.Mode == nil {
+		o.nullFields = append(o.nullFields, "Mode")
+	}
+	return o
+}
+
+// endregion
+
+// region StepAdjustments
+
+func (o StepAdjustment) MarshalJSON() ([]byte, error) {
+	type noMethod StepAdjustment
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *StepAdjustment) SetAction(v *Action) *StepAdjustment {
+	if o.Action = v; o.Action == nil {
+		o.nullFields = append(o.nullFields, "Action")
+	}
+	return o
+}
+
+func (o *StepAdjustment) SetThreshold(v *int) *StepAdjustment {
+	if o.Threshold = v; o.Threshold == nil {
+		o.nullFields = append(o.nullFields, "Threshold")
 	}
 	return o
 }
@@ -2835,6 +3545,20 @@ func (o *Strategy) SetRevertToSpot(v *RevertToSpot) *Strategy {
 func (o *Strategy) SetScalingStrategy(v *ScalingStrategy) *Strategy {
 	if o.ScalingStrategy = v; o.ScalingStrategy == nil {
 		o.nullFields = append(o.nullFields, "ScalingStrategy")
+	}
+	return o
+}
+
+func (o *Strategy) SetUtilizeCommitments(v *bool) *Strategy {
+	if o.UtilizeCommitments = v; o.UtilizeCommitments == nil {
+		o.nullFields = append(o.nullFields, "UtilizeCommitments")
+	}
+	return o
+}
+
+func (o *Strategy) SetMinimumInstanceLifetime(v *int) *Strategy {
+	if o.MinimumInstanceLifetime = v; o.MinimumInstanceLifetime == nil {
+		o.nullFields = append(o.nullFields, "MinimumInstanceLifetime")
 	}
 	return o
 }
@@ -3315,6 +4039,281 @@ func (o *LaunchSpecification) SetTags(v []*Tag) *LaunchSpecification {
 	return o
 }
 
+func (o *LaunchSpecification) SetMetadataOptions(v *MetadataOptions) *LaunchSpecification {
+	if o.MetadataOptions = v; o.MetadataOptions == nil {
+		o.nullFields = append(o.nullFields, "MetadataOptions")
+	}
+	return o
+}
+
+func (o *LaunchSpecification) SetCPUOptions(v *CPUOptions) *LaunchSpecification {
+	if o.CPUOptions = v; o.CPUOptions == nil {
+		o.nullFields = append(o.nullFields, "CPUOptions")
+	}
+	return o
+}
+
+func (o *LaunchSpecification) SetResourceTagSpecification(v *ResourceTagSpecification) *LaunchSpecification {
+	if o.ResourceTagSpecification = v; o.ResourceTagSpecification == nil {
+		o.nullFields = append(o.nullFields, "ResourceTagSpecification")
+	}
+	return o
+}
+
+func (o *LaunchSpecification) SetITF(v *ITF) *LaunchSpecification {
+	if o.ITF = v; o.ITF == nil {
+		o.nullFields = append(o.nullFields, "ITF")
+	}
+	return o
+}
+
+// endregion
+
+// region Matcher
+
+func (o Matcher) MarshalJSON() ([]byte, error) {
+	type noMethod Matcher
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Matcher) SetHTTPCode(v *string) *Matcher {
+	if o.HTTPCode = v; o.HTTPCode == nil {
+		o.nullFields = append(o.nullFields, "HTTPCode")
+	}
+	return o
+}
+
+func (o *Matcher) SetGRPCCode(v *string) *Matcher {
+	if o.GRPCCode = v; o.GRPCCode == nil {
+		o.nullFields = append(o.nullFields, "GRPCCode")
+	}
+	return o
+}
+
+// endregion
+
+// region ITF
+
+func (o ITF) MarshalJSON() ([]byte, error) {
+	type noMethod ITF
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *ITF) SetLoadBalancers(v []*ITFLoadBalancer) *ITF {
+	if o.LoadBalancers = v; o.LoadBalancers == nil {
+		o.nullFields = append(o.nullFields, "LoadBalancers")
+	}
+	return o
+}
+
+func (o *ITF) SetMigrationHealthinessThreshold(v *int) *ITF {
+	if o.MigrationHealthinessThreshold = v; o.MigrationHealthinessThreshold == nil {
+		o.nullFields = append(o.nullFields, "MigrationHealthinessThreshold")
+	}
+	return o
+}
+
+func (o *ITF) SetFixedTargetGroups(v *bool) *ITF {
+	if o.FixedTargetGroups = v; o.FixedTargetGroups == nil {
+		o.nullFields = append(o.nullFields, "FixedTargetGroups")
+	}
+	return o
+}
+
+func (o *ITF) SetWeightStrategy(v *string) *ITF {
+	if o.WeightStrategy = v; o.WeightStrategy == nil {
+		o.nullFields = append(o.nullFields, "WeightStrategy")
+	}
+	return o
+}
+
+func (o *ITF) SetTargetGroupConfig(v *TargetGroupConfig) *ITF {
+	if o.TargetGroupConfig = v; o.TargetGroupConfig == nil {
+		o.nullFields = append(o.nullFields, "TargetGroupConfig")
+	}
+	return o
+}
+
+func (o *ITF) SetDefaultStaticTargetGroups(v []*StaticTargetGroup) *ITF {
+	if o.DefaultStaticTargetGroups = v; o.DefaultStaticTargetGroups == nil {
+		o.nullFields = append(o.nullFields, "DefaultStaticTargetGroups")
+	}
+	return o
+}
+
+// endregion
+
+// region ITFLoadBalancer
+
+func (o ITFLoadBalancer) MarshalJSON() ([]byte, error) {
+	type noMethod ITFLoadBalancer
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *ITFLoadBalancer) SetListenerRules(v []*ListenerRule) *ITFLoadBalancer {
+	if o.ListenerRules = v; o.ListenerRules == nil {
+		o.nullFields = append(o.nullFields, "ListenerRules")
+	}
+	return o
+}
+
+func (o *ITFLoadBalancer) SetLoadBalancerARN(v *string) *ITFLoadBalancer {
+	if o.LoadBalancerARN = v; o.LoadBalancerARN == nil {
+		o.nullFields = append(o.nullFields, "LoadBalancerARN")
+	}
+	return o
+}
+
+// endregion
+
+// region ListenerRule
+
+func (o ListenerRule) MarshalJSON() ([]byte, error) {
+	type noMethod ListenerRule
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *ListenerRule) SetRuleARN(v *string) *ListenerRule {
+	if o.RuleARN = v; o.RuleARN == nil {
+		o.nullFields = append(o.nullFields, "RuleARN")
+	}
+	return o
+}
+
+func (o *ListenerRule) SetStaticTargetGroups(v []*StaticTargetGroup) *ListenerRule {
+	if o.StaticTargetGroups = v; o.StaticTargetGroups == nil {
+		o.nullFields = append(o.nullFields, "StaticTargetGroups")
+	}
+	return o
+}
+
+// endregion
+
+// region StaticTargetGroup
+
+func (o StaticTargetGroup) MarshalJSON() ([]byte, error) {
+	type noMethod StaticTargetGroup
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *StaticTargetGroup) SetStaticTargetGroupARN(v *string) *StaticTargetGroup {
+	if o.StaticTargetGroupARN = v; o.StaticTargetGroupARN == nil {
+		o.nullFields = append(o.nullFields, "StaticTargetGroupARN")
+	}
+	return o
+}
+
+func (o *StaticTargetGroup) SetPercentage(v *float64) *StaticTargetGroup {
+	if o.Percentage = v; o.Percentage == nil {
+		o.nullFields = append(o.nullFields, "Percentage")
+	}
+	return o
+}
+
+// region TargetGroupConfig
+
+func (o TargetGroupConfig) MarshalJSON() ([]byte, error) {
+	type noMethod TargetGroupConfig
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *TargetGroupConfig) SetVPCId(v *string) *TargetGroupConfig {
+	if o.VPCID = v; o.VPCID == nil {
+		o.nullFields = append(o.nullFields, "VPCID")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetHealthCheckIntervalSeconds(v *int) *TargetGroupConfig {
+	if o.HealthCheckIntervalSeconds = v; o.HealthCheckIntervalSeconds == nil {
+		o.nullFields = append(o.nullFields, "HealthCheckIntervalSeconds")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetHealthCheckPath(v *string) *TargetGroupConfig {
+	if o.HealthCheckPath = v; o.HealthCheckPath == nil {
+		o.nullFields = append(o.nullFields, "HealthCheckPath")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetHealthCheckPort(v *string) *TargetGroupConfig {
+	if o.HealthCheckPort = v; o.HealthCheckPort == nil {
+		o.nullFields = append(o.nullFields, "HealthCheckPort")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetHealthCheckProtocol(v *string) *TargetGroupConfig {
+	if o.HealthCheckProtocol = v; o.HealthCheckProtocol == nil {
+		o.nullFields = append(o.nullFields, "HealthCheckProtocol")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetHealthyThresholdCount(v *int) *TargetGroupConfig {
+	if o.HealthyThresholdCount = v; o.HealthyThresholdCount == nil {
+		o.nullFields = append(o.nullFields, "HealthyThresholdCount")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetUnhealthyThresholdCount(v *int) *TargetGroupConfig {
+	if o.UnhealthyThresholdCount = v; o.UnhealthyThresholdCount == nil {
+		o.nullFields = append(o.nullFields, "UnhealthyThresholdCount")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetHealthCheckTimeoutSeconds(v *int) *TargetGroupConfig {
+	if o.HealthCheckTimeoutSeconds = v; o.HealthCheckTimeoutSeconds == nil {
+		o.nullFields = append(o.nullFields, "HealthCheckTimeoutSeconds")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetPort(v *int) *TargetGroupConfig {
+	if o.Port = v; o.Port == nil {
+		o.nullFields = append(o.nullFields, "Port")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetProtocol(v *string) *TargetGroupConfig {
+	if o.Protocol = v; o.Protocol == nil {
+		o.nullFields = append(o.nullFields, "Protocol")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetProtocolVersion(v *string) *TargetGroupConfig {
+	if o.ProtocolVersion = v; o.ProtocolVersion == nil {
+		o.nullFields = append(o.nullFields, "ProtocolVersion")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetMatcher(v *Matcher) *TargetGroupConfig {
+	if o.Matcher = v; o.Matcher == nil {
+		o.nullFields = append(o.nullFields, "Matcher")
+	}
+	return o
+}
+
+func (o *TargetGroupConfig) SetTags(v []*Tag) *TargetGroupConfig {
+	if o.Tags = v; o.Tags == nil {
+		o.nullFields = append(o.nullFields, "Tags")
+	}
+	return o
+}
+
 // endregion
 
 // region LoadBalancersConfig
@@ -3561,6 +4560,13 @@ func (o *EBS) SetIOPS(v *int) *EBS {
 	return o
 }
 
+func (o *EBS) SetThroughput(v *int) *EBS {
+	if o.Throughput = v; o.Throughput == nil {
+		o.nullFields = append(o.nullFields, "Throughput")
+	}
+	return o
+}
+
 // endregion
 
 // region IAMInstanceProfile
@@ -3622,6 +4628,58 @@ func (o *RollStrategy) SetAction(v *string) *RollStrategy {
 func (o *RollStrategy) SetShouldDrainInstances(v *bool) *RollStrategy {
 	if o.ShouldDrainInstances = v; o.ShouldDrainInstances == nil {
 		o.nullFields = append(o.nullFields, "ShouldDrainInstances")
+	}
+	return o
+}
+
+func (o *RollStrategy) SetOnFailure(v *OnFailure) *RollStrategy {
+	if o.OnFailure = v; o.OnFailure == nil {
+		o.nullFields = append(o.nullFields, "OnFailure")
+	}
+	return o
+}
+
+// endregion
+
+// region RollStrategy
+
+func (o OnFailure) MarshalJSON() ([]byte, error) {
+	type noMethod OnFailure
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *OnFailure) SetActionType(v *string) *OnFailure {
+	if o.ActionType = v; o.ActionType == nil {
+		o.nullFields = append(o.nullFields, "ActionType")
+	}
+	return o
+}
+
+func (o *OnFailure) SetShouldHandleAllBatches(v *bool) *OnFailure {
+	if o.ShouldHandleAllBatches = v; o.ShouldHandleAllBatches == nil {
+		o.nullFields = append(o.nullFields, "ShouldHandleAllBatches")
+	}
+	return o
+}
+
+func (o *OnFailure) SetBatchNum(v *int) *OnFailure {
+	if o.BatchNum = v; o.BatchNum == nil {
+		o.nullFields = append(o.nullFields, "BatchNum")
+	}
+	return o
+}
+
+func (o *OnFailure) SetDrainingTimeout(v *int) *OnFailure {
+	if o.DrainingTimeout = v; o.DrainingTimeout == nil {
+		o.nullFields = append(o.nullFields, "DrainingTimeout")
+	}
+	return o
+}
+
+func (o *OnFailure) SetShouldDecrementTargetCapacity(v *bool) *OnFailure {
+	if o.ShouldDecrementTargetCapacity = v; o.ShouldDecrementTargetCapacity == nil {
+		o.nullFields = append(o.nullFields, "ShouldDecrementTargetCapacity")
 	}
 	return o
 }
@@ -3814,4 +4872,416 @@ func (s *ServiceOp) Scale(ctx context.Context, input *ScaleGroupInput) (*ScaleGr
 	return output, err
 }
 
-//endregion
+// endregion
+
+// region SuspendProcesses
+
+type SuspendProcesses struct {
+	Suspensions []*Suspension `json:"suspensions,omitempty"`
+	Processes   []string      `json:"processes,omitempty"`
+}
+
+type Suspension struct {
+	Name         *string `json:"name,omitempty"`
+	TTLInMinutes *int    `json:"ttlInMinutes,omitempty"`
+
+	// Read-only fields.
+	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+
+	forceSendFields []string
+	nullFields      []string
+}
+
+type CreateSuspensionsInput struct {
+	GroupID     *string       `json:"groupId,omitempty"`
+	Suspensions []*Suspension `json:"suspensions,omitempty"`
+}
+
+type CreateSuspensionsOutput struct {
+	SuspendProcesses *SuspendProcesses `json:"suspendProcesses,omitempty"`
+}
+
+type ListSuspensionsInput struct {
+	GroupID *string `json:"groupId,omitempty"`
+}
+
+type ListSuspensionsOutput struct {
+	SuspendProcesses *SuspendProcesses `json:"suspendProcesses,omitempty"`
+}
+
+type DeleteSuspensionsInput struct {
+	GroupID   *string  `json:"groupId,omitempty"`
+	Processes []string `json:"processes,omitempty"`
+}
+
+type DeleteSuspensionsOutput struct{}
+
+func suspendProcessesFromHttpResponse(resp *http.Response) ([]*SuspendProcesses, error) {
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return suspendProcessesFromJSON(body)
+}
+
+func suspendProcessesObjFromJSON(in []byte) (*SuspendProcesses, error) {
+	v := new(SuspendProcesses)
+	if err := json.Unmarshal(in, v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func suspendProcessesFromJSON(in []byte) ([]*SuspendProcesses, error) {
+	var rw client.Response
+	if err := json.Unmarshal(in, &rw); err != nil {
+		return nil, err
+	}
+	out := make([]*SuspendProcesses, len(rw.Response.Items))
+	if len(out) == 0 {
+		return out, nil
+	}
+	for i, rb := range rw.Response.Items {
+		v, err := suspendProcessesObjFromJSON(rb)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+	}
+	return out, nil
+}
+
+func (s *ServiceOp) CreateSuspensions(ctx context.Context, input *CreateSuspensionsInput) (*CreateSuspensionsOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/suspension", uritemplates.Values{
+		"groupId": spotinst.StringValue(input.GroupID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// We do not need the ID anymore so let's drop it.
+	input.GroupID = nil
+
+	r := client.NewRequest(http.MethodPost, path)
+	r.Obj = input
+
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	suspendProcesses, err := suspendProcessesFromHttpResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	output := new(CreateSuspensionsOutput)
+	if len(suspendProcesses) > 0 {
+		output.SuspendProcesses = suspendProcesses[0]
+	}
+
+	return output, nil
+}
+
+func (s *ServiceOp) ListSuspensions(ctx context.Context, input *ListSuspensionsInput) (*ListSuspensionsOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/suspension", uritemplates.Values{
+		"groupId": spotinst.StringValue(input.GroupID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	r := client.NewRequest(http.MethodGet, path)
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	suspendProcesses, err := suspendProcessesFromHttpResponse(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	output := new(ListSuspensionsOutput)
+	if len(suspendProcesses) > 0 {
+		output.SuspendProcesses = suspendProcesses[0]
+	}
+
+	return output, nil
+}
+
+func (s *ServiceOp) DeleteSuspensions(ctx context.Context, input *DeleteSuspensionsInput) (*DeleteSuspensionsOutput, error) {
+	path, err := uritemplates.Expand("/aws/ec2/group/{groupId}/suspension", uritemplates.Values{
+		"groupId": spotinst.StringValue(input.GroupID),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// We do not need the ID anymore so let's drop it.
+	input.GroupID = nil
+
+	r := client.NewRequest(http.MethodDelete, path)
+	r.Obj = input
+
+	resp, err := client.RequireOK(s.Client.Do(ctx, r))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return &DeleteSuspensionsOutput{}, nil
+}
+
+func (o Suspension) MarshalJSON() ([]byte, error) {
+	type noMethod Suspension
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Suspension) SetName(v *string) *Suspension {
+	if o.Name = v; o.Name == nil {
+		o.nullFields = append(o.nullFields, "Name")
+	}
+	return o
+}
+
+func (o *Suspension) SetTTLInMinutes(v *int) *Suspension {
+	if o.TTLInMinutes = v; o.TTLInMinutes == nil {
+		o.nullFields = append(o.nullFields, "TTLInMinutes")
+	}
+	return o
+}
+
+// endregion
+
+// region MetadataOptions
+
+func (o MetadataOptions) MarshalJSON() ([]byte, error) {
+	type noMethod MetadataOptions
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *MetadataOptions) SetHTTPTokens(v *string) *MetadataOptions {
+	if o.HTTPTokens = v; o.HTTPTokens == nil {
+		o.nullFields = append(o.nullFields, "HTTPTokens")
+	}
+	return o
+}
+
+func (o *MetadataOptions) SetHTTPPutResponseHopLimit(v *int) *MetadataOptions {
+	if o.HTTPPutResponseHopLimit = v; o.HTTPPutResponseHopLimit == nil {
+		o.nullFields = append(o.nullFields, "HTTPPutResponseHopLimit")
+	}
+	return o
+}
+
+// endregion
+
+// region CPUOptions
+
+func (o CPUOptions) MarshalJSON() ([]byte, error) {
+	type noMethod CPUOptions
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+func (o *CPUOptions) SetThreadsPerCore(v *int) *CPUOptions {
+	if o.ThreadsPerCore = v; o.ThreadsPerCore == nil {
+		o.nullFields = append(o.nullFields, "ThreadsPerCore")
+	}
+	return o
+}
+
+// endregion
+
+// region StatefulInstance
+
+func (o StatefulInstance) MarshalJSON() ([]byte, error) {
+	type noMethod StatefulInstance
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *StatefulInstance) SetStatefulInstanceID(v *string) *StatefulInstance {
+	if o.StatefulInstanceID = v; o.StatefulInstanceID == nil {
+		o.nullFields = append(o.nullFields, "StatefulInstanceID")
+	}
+	return o
+}
+
+func (o *StatefulInstance) SetInstanceID(v *string) *StatefulInstance {
+	if o.InstanceID = v; o.InstanceID == nil {
+		o.nullFields = append(o.nullFields, "InstanceID")
+	}
+	return o
+}
+
+func (o *StatefulInstance) SetState(v *string) *StatefulInstance {
+	if o.State = v; o.State == nil {
+		o.nullFields = append(o.nullFields, "State")
+	}
+	return o
+}
+
+func (o *StatefulInstance) SetPrivateIP(v *string) *StatefulInstance {
+	if o.PrivateIP = v; o.PrivateIP == nil {
+		o.nullFields = append(o.nullFields, "PrivateIP")
+	}
+	return o
+}
+
+func (o *StatefulInstance) SetImageID(v *string) *StatefulInstance {
+	if o.ImageID = v; o.ImageID == nil {
+		o.nullFields = append(o.nullFields, "ImageID")
+	}
+	return o
+}
+
+func (o *StatefulInstance) SetDevices(v []*Device) *StatefulInstance {
+	if o.Devices = v; o.Devices == nil {
+		o.nullFields = append(o.nullFields, "Devices")
+	}
+	return o
+}
+
+// endregion
+
+// region Device
+
+func (o Device) MarshalJSON() ([]byte, error) {
+	type noMethod Device
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Device) SetDeviceName(v *string) *Device {
+	if o.DeviceName = v; o.DeviceName == nil {
+		o.nullFields = append(o.nullFields, "DeviceName")
+	}
+	return o
+}
+
+func (o *Device) SetVolumeID(v *string) *Device {
+	if o.VolumeID = v; o.VolumeID == nil {
+		o.nullFields = append(o.nullFields, "VolumeID")
+	}
+	return o
+}
+
+func (o *Device) SetSnapshotID(v *string) *Device {
+	if o.SnapshotID = v; o.SnapshotID == nil {
+		o.nullFields = append(o.nullFields, "SnapshotID")
+	}
+	return o
+}
+
+// endregion
+
+// region ResourceTagSpecification
+
+func (o ResourceTagSpecification) MarshalJSON() ([]byte, error) {
+	type noMethod ResourceTagSpecification
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *ResourceTagSpecification) SetVolumes(v *Volumes) *ResourceTagSpecification {
+	if o.Volumes = v; o.Volumes == nil {
+		o.nullFields = append(o.nullFields, "Volumes")
+	}
+	return o
+}
+
+func (o *ResourceTagSpecification) SetSnapshots(v *Snapshots) *ResourceTagSpecification {
+	if o.Snapshots = v; o.Snapshots == nil {
+		o.nullFields = append(o.nullFields, "Snapshots")
+	}
+	return o
+}
+
+func (o *ResourceTagSpecification) SetENIs(v *ENIs) *ResourceTagSpecification {
+	if o.ENIs = v; o.ENIs == nil {
+		o.nullFields = append(o.nullFields, "ENIs")
+	}
+	return o
+}
+
+func (o *ResourceTagSpecification) SetAMIs(v *AMIs) *ResourceTagSpecification {
+	if o.AMIs = v; o.AMIs == nil {
+		o.nullFields = append(o.nullFields, "AMIs")
+	}
+	return o
+}
+
+// endregion
+
+// region Volumes
+
+func (o Volumes) MarshalJSON() ([]byte, error) {
+	type noMethod Volumes
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Volumes) SetShouldTag(v *bool) *Volumes {
+	if o.ShouldTag = v; o.ShouldTag == nil {
+		o.nullFields = append(o.nullFields, "ShouldTag")
+	}
+	return o
+}
+
+// endregion
+
+// region Snapshots
+
+func (o Snapshots) MarshalJSON() ([]byte, error) {
+	type noMethod Snapshots
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *Snapshots) SetShouldTag(v *bool) *Snapshots {
+	if o.ShouldTag = v; o.ShouldTag == nil {
+		o.nullFields = append(o.nullFields, "ShouldTag")
+	}
+	return o
+}
+
+// endregion
+
+// region ENIs
+
+func (o ENIs) MarshalJSON() ([]byte, error) {
+	type noMethod ENIs
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *ENIs) SetShouldTag(v *bool) *ENIs {
+	if o.ShouldTag = v; o.ShouldTag == nil {
+		o.nullFields = append(o.nullFields, "ShouldTag")
+	}
+	return o
+}
+
+// endregion
+
+// region AMIs
+
+func (o AMIs) MarshalJSON() ([]byte, error) {
+	type noMethod AMIs
+	raw := noMethod(o)
+	return jsonutil.MarshalJSON(raw, o.forceSendFields, o.nullFields)
+}
+
+func (o *AMIs) SetShouldTag(v *bool) *AMIs {
+	if o.ShouldTag = v; o.ShouldTag == nil {
+		o.nullFields = append(o.nullFields, "ShouldTag")
+	}
+	return o
+}
+
+// endregion

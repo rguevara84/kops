@@ -17,17 +17,18 @@ limitations under the License.
 package watchers
 
 import (
+	"context"
 	"fmt"
 	"time"
 
-	"k8s.io/api/extensions/v1beta1"
+	v1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
-
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dns-controller/pkg/dns"
 	"k8s.io/kops/dns-controller/pkg/util"
+	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
 // IngressController watches for Ingress objects with dns labels
@@ -66,11 +67,13 @@ func (c *IngressController) Run() {
 
 func (c *IngressController) runWatcher(stopCh <-chan struct{}) {
 	runOnce := func() (bool, error) {
+		ctx := context.TODO()
+
 		var listOpts metav1.ListOptions
 		klog.V(4).Infof("querying without label filter")
 
 		allKeys := c.scope.AllKeys()
-		ingressList, err := c.client.ExtensionsV1beta1().Ingresses(c.namespace).List(listOpts)
+		ingressList, err := c.client.NetworkingV1().Ingresses(c.namespace).List(ctx, listOpts)
 		if err != nil {
 			return false, fmt.Errorf("error listing ingresses: %v", err)
 		}
@@ -92,7 +95,7 @@ func (c *IngressController) runWatcher(stopCh <-chan struct{}) {
 
 		listOpts.Watch = true
 		listOpts.ResourceVersion = ingressList.ResourceVersion
-		watcher, err := c.client.ExtensionsV1beta1().Ingresses(c.namespace).Watch(listOpts)
+		watcher, err := c.client.NetworkingV1().Ingresses(c.namespace).Watch(ctx, listOpts)
 		if err != nil {
 			return false, fmt.Errorf("error watching ingresses: %v", err)
 		}
@@ -108,7 +111,7 @@ func (c *IngressController) runWatcher(stopCh <-chan struct{}) {
 					return false, nil
 				}
 
-				ingress := event.Object.(*v1beta1.Ingress)
+				ingress := event.Object.(*v1.Ingress)
 				klog.V(4).Infof("ingress changed: %s %v", event.Type, ingress.Name)
 
 				switch event.Type {
@@ -139,7 +142,7 @@ func (c *IngressController) runWatcher(stopCh <-chan struct{}) {
 }
 
 // updateIngressRecords will apply the records for the specified ingress.  It returns the key that was set.
-func (c *IngressController) updateIngressRecords(ingress *v1beta1.Ingress) string {
+func (c *IngressController) updateIngressRecords(ingress *v1.Ingress) string {
 	var records []dns.Record
 
 	var ingresses []dns.Record
@@ -153,8 +156,12 @@ func (c *IngressController) updateIngressRecords(ingress *v1beta1.Ingress) strin
 			})
 		}
 		if ingress.IP != "" {
+			var recordType dns.RecordType = dns.RecordTypeA
+			if utils.IsIPv6IP(ingress.IP) {
+				recordType = dns.RecordTypeAAAA
+			}
 			ingresses = append(ingresses, dns.Record{
-				RecordType: dns.RecordTypeA,
+				RecordType: recordType,
 				Value:      ingress.IP,
 			})
 		}
@@ -167,8 +174,7 @@ func (c *IngressController) updateIngressRecords(ingress *v1beta1.Ingress) strin
 
 		fqdn := dns.EnsureDotSuffix(rule.Host)
 		for _, ingress := range ingresses {
-			var r dns.Record
-			r = ingress
+			r := ingress
 			r.FQDN = fqdn
 			records = append(records, r)
 		}

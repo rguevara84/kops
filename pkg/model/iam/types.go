@@ -19,7 +19,14 @@ package iam
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+
+	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/truncate"
 )
+
+// MaxLengthIAMRoleName defines the max length of an IAMRole name
+const MaxLengthIAMRoleName = 64
 
 // ParseStatements parses JSON into a list of Statements
 func ParseStatements(policy string) ([]*Statement, error) {
@@ -28,4 +35,34 @@ func ParseStatements(policy string) ([]*Statement, error) {
 		return nil, fmt.Errorf("error parsing IAM statements: %v", err)
 	}
 	return statements, nil
+}
+
+type IAMModelContext struct {
+	// AWSAccountID holds the 12 digit AWS account ID, when running on AWS
+	AWSAccountID string
+	// AWSPartition defines the partition of the AWS account, typically "aws", "aws-cn", or "aws-us-gov"
+	AWSPartition string
+
+	Cluster *kops.Cluster
+}
+
+// IAMNameForServiceAccountRole determines the name of the IAM Role and Instance Profile to use for the service-account role
+func (b *IAMModelContext) IAMNameForServiceAccountRole(role Subject) (string, error) {
+	serviceAccount, ok := role.ServiceAccount()
+	if !ok {
+		return "", fmt.Errorf("role %v does not have ServiceAccount", role)
+	}
+	name := IAMNameForServiceAccountRole(serviceAccount.Name, serviceAccount.Namespace, b.ClusterName())
+	return name, nil
+}
+
+// ClusterName returns the cluster name
+func (b *IAMModelContext) ClusterName() string {
+	return b.Cluster.ObjectMeta.Name
+}
+
+func IAMNameForServiceAccountRole(name, namespace, clusterName string) string {
+	role := name + "." + strings.ReplaceAll(namespace, "*", "wildcard") + ".sa." + clusterName
+	role = truncate.TruncateString(role, truncate.TruncateStringOptions{MaxLength: MaxLengthIAMRoleName, AlwaysAddHash: false})
+	return role
 }

@@ -17,7 +17,7 @@ limitations under the License.
 package model
 
 import (
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/systemd"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
@@ -46,7 +46,7 @@ func (b *FirewallBuilder) buildSystemdService() *nodetasks.Service {
 	manifest.Set("Unit", "Before", "network.target")
 	manifest.Set("Service", "Type", "oneshot")
 	manifest.Set("Service", "RemainAfterExit", "yes")
-	manifest.Set("Service", "ExecStart", "/home/kubernetes/bin/iptables-setup")
+	manifest.Set("Service", "ExecStart", "/opt/kops/bin/iptables-setup")
 	manifest.Set("Install", "WantedBy", "basic.target")
 
 	manifestString := manifest.Render()
@@ -73,13 +73,13 @@ func (b *FirewallBuilder) buildFirewallScript() *nodetasks.File {
 
 # The GCI image has host firewall which drop most inbound/forwarded packets.
 # We need to add rules to accept all TCP/UDP/ICMP packets.
-if iptables -L INPUT | grep "Chain INPUT (policy DROP)" > /dev/null; then
+if iptables -w -L INPUT | grep "Chain INPUT (policy DROP)" > /dev/null; then
 echo "Add rules to accept all inbound TCP/UDP/ICMP packets"
 iptables -A INPUT -w -p TCP -j ACCEPT
 iptables -A INPUT -w -p UDP -j ACCEPT
 iptables -A INPUT -w -p ICMP -j ACCEPT
 fi
-if iptables -L FORWARD | grep "Chain FORWARD (policy DROP)" > /dev/null; then
+if iptables -w -L FORWARD | grep "Chain FORWARD (policy DROP)" > /dev/null; then
 echo "Add rules to accept all forwarded TCP/UDP/ICMP packets"
 iptables -A FORWARD -w -p TCP -j ACCEPT
 iptables -A FORWARD -w -p UDP -j ACCEPT
@@ -87,7 +87,7 @@ iptables -A FORWARD -w -p ICMP -j ACCEPT
 fi
 `
 	return &nodetasks.File{
-		Path:     "/home/kubernetes/bin/iptables-setup",
+		Path:     "/opt/kops/bin/iptables-setup",
 		Contents: fi.NewStringResource(script),
 		Type:     nodetasks.FileType_File,
 		Mode:     s("0755"),

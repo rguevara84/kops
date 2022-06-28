@@ -25,36 +25,48 @@ import (
 
 	"github.com/spotinst/spotinst-sdk-go/service/ocean/providers/aws"
 	"github.com/spotinst/spotinst-sdk-go/spotinst/util/stringutil"
-	"k8s.io/klog"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/resources/spotinst"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awstasks"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=LaunchSpec
+// +kops:fitask
 type LaunchSpec struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	ID                 *string
-	UserData           *fi.ResourceHolder
-	SecurityGroups     []*awstasks.SecurityGroup
-	IAMInstanceProfile *awstasks.IAMInstanceProfile
-	ImageID            *string
-	Labels             map[string]string
+	SpotPercentage           *int64
+	UserData                 fi.Resource
+	SecurityGroups           []*awstasks.SecurityGroup
+	Subnets                  []*awstasks.Subnet
+	IAMInstanceProfile       *awstasks.IAMInstanceProfile
+	ImageID                  *string
+	InstanceTypes            []string
+	Tags                     map[string]string
+	RootVolumeOpts           *RootVolumeOpts
+	AutoScalerOpts           *AutoScalerOpts
+	RestrictScaleDown        *bool
+	AssociatePublicIPAddress *bool
+	MinSize                  *int64
+	MaxSize                  *int64
 
 	Ocean *Ocean
 }
 
-var _ fi.CompareWithID = &LaunchSpec{}
+var (
+	_ fi.Task            = &LaunchSpec{}
+	_ fi.CompareWithID   = &LaunchSpec{}
+	_ fi.HasDependencies = &LaunchSpec{}
+)
 
 func (o *LaunchSpec) CompareWithID() *string {
 	return o.Name
 }
-
-var _ fi.HasDependencies = &LaunchSpec{}
 
 func (o *LaunchSpec) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 	var deps []fi.Task
@@ -69,8 +81,18 @@ func (o *LaunchSpec) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 		}
 	}
 
+	if o.Subnets != nil {
+		for _, subnet := range o.Subnets {
+			deps = append(deps, subnet)
+		}
+	}
+
 	if o.Ocean != nil {
 		deps = append(deps, o.Ocean)
+	}
+
+	if o.UserData != nil {
+		deps = append(deps, fi.FindDependencies(tasks, o.UserData)...)
 	}
 
 	return deps
@@ -107,7 +129,7 @@ var _ fi.HasCheckExisting = &LaunchSpec{}
 func (o *LaunchSpec) Find(c *fi.Context) (*LaunchSpec, error) {
 	cloud := c.Cloud.(awsup.AWSCloud)
 
-	ocean, err := o.Ocean.find(cloud.Spotinst().Ocean(), *o.Ocean.Name)
+	ocean, err := o.Ocean.find(cloud.Spotinst().Ocean())
 	if err != nil {
 		return nil, err
 	}
@@ -118,11 +140,18 @@ func (o *LaunchSpec) Find(c *fi.Context) (*LaunchSpec, error) {
 	}
 
 	actual := &LaunchSpec{}
-	actual.ID = spec.ID
 	actual.Name = spec.Name
 	actual.Ocean = &Ocean{
-		ID:   ocean.ID,
-		Name: o.Ocean.Name,
+		Name: ocean.Name,
+	}
+	actual.RestrictScaleDown = spec.RestrictScaleDown
+
+	// Capacity.
+	{
+		if spec.ResourceLimits != nil {
+			actual.MinSize = fi.Int64(int64(fi.IntValue(spec.ResourceLimits.MinInstanceCount)))
+			actual.MaxSize = fi.Int64(int64(fi.IntValue(spec.ResourceLimits.MaxInstanceCount)))
+		}
 	}
 
 	// Image.
@@ -148,13 +177,55 @@ func (o *LaunchSpec) Find(c *fi.Context) (*LaunchSpec, error) {
 			if err != nil {
 				return nil, err
 			}
-			actual.UserData = fi.WrapResource(fi.NewStringResource(string(userData)))
+			actual.UserData = fi.NewStringResource(string(userData))
 		}
 	}
 
 	// IAM instance profile.
-	if spec.IAMInstanceProfile != nil {
-		actual.IAMInstanceProfile = &awstasks.IAMInstanceProfile{Name: spec.IAMInstanceProfile.Name}
+	{
+		if spec.IAMInstanceProfile != nil {
+			actual.IAMInstanceProfile = &awstasks.IAMInstanceProfile{Name: spec.IAMInstanceProfile.Name}
+		}
+	}
+
+	// Root volume options.
+	{
+		// Volume size.
+		{
+			if spec.RootVolumeSize != nil {
+				actual.RootVolumeOpts = new(RootVolumeOpts)
+				actual.RootVolumeOpts.Size = fi.Int64(int64(*spec.RootVolumeSize))
+			}
+		}
+
+		// Block device mappings.
+		{
+			if spec.BlockDeviceMappings != nil {
+				for _, b := range spec.BlockDeviceMappings {
+					if b.EBS == nil || b.EBS.SnapshotID != nil {
+						continue // not the root
+					}
+					if actual.RootVolumeOpts == nil {
+						actual.RootVolumeOpts = new(RootVolumeOpts)
+					}
+					if b.EBS.VolumeType != nil {
+						actual.RootVolumeOpts.Type = fi.String(strings.ToLower(fi.StringValue(b.EBS.VolumeType)))
+					}
+					if b.EBS.VolumeSize != nil {
+						actual.RootVolumeOpts.Size = fi.Int64(int64(fi.IntValue(b.EBS.VolumeSize)))
+					}
+					if b.EBS.IOPS != nil {
+						actual.RootVolumeOpts.IOPS = fi.Int64(int64(fi.IntValue(b.EBS.IOPS)))
+					}
+					if b.EBS.Throughput != nil {
+						actual.RootVolumeOpts.Throughput = fi.Int64(int64(fi.IntValue(b.EBS.Throughput)))
+					}
+					if b.EBS.Encrypted != nil {
+						actual.RootVolumeOpts.Encryption = b.EBS.Encrypted
+					}
+				}
+			}
+		}
 	}
 
 	// Security groups.
@@ -167,12 +238,92 @@ func (o *LaunchSpec) Find(c *fi.Context) (*LaunchSpec, error) {
 		}
 	}
 
-	// Labels.
-	if spec.Labels != nil {
-		actual.Labels = make(map[string]string)
+	// Subnets.
+	{
+		if spec.SubnetIDs != nil {
+			for _, subnetID := range spec.SubnetIDs {
+				actual.Subnets = append(actual.Subnets,
+					&awstasks.Subnet{ID: fi.String(subnetID)})
+			}
+			if subnetSlicesEqualIgnoreOrder(actual.Subnets, o.Subnets) {
+				actual.Subnets = o.Subnets
+			}
+		}
+	}
 
+	// Public IP.
+	if spec.AssociatePublicIPAddress != nil {
+		actual.AssociatePublicIPAddress = spec.AssociatePublicIPAddress
+	}
+
+	// Instance types.
+	{
+		if itypes := spec.InstanceTypes; itypes != nil {
+			actual.InstanceTypes = itypes
+		}
+	}
+
+	// Tags.
+	{
+		if len(spec.Tags) > 0 {
+			actual.Tags = make(map[string]string)
+			for _, tag := range spec.Tags {
+				actual.Tags[fi.StringValue(tag.Key)] = fi.StringValue(tag.Value)
+			}
+		}
+	}
+
+	// Auto Scaler.
+	{
+		if spec.AutoScale != nil {
+			actual.AutoScalerOpts = new(AutoScalerOpts)
+
+			// Headroom.
+			if headrooms := spec.AutoScale.Headrooms; len(headrooms) > 0 {
+				actual.AutoScalerOpts.Headroom = &AutoScalerHeadroomOpts{
+					CPUPerUnit: headrooms[0].CPUPerUnit,
+					GPUPerUnit: headrooms[0].GPUPerUnit,
+					MemPerUnit: headrooms[0].MemoryPerUnit,
+					NumOfUnits: headrooms[0].NumOfUnits,
+				}
+			}
+		}
+	}
+
+	// Labels.
+	if labels := spec.Labels; labels != nil {
+		if actual.AutoScalerOpts == nil {
+			actual.AutoScalerOpts = new(AutoScalerOpts)
+		}
+
+		actual.AutoScalerOpts.Labels = make(map[string]string)
 		for _, label := range spec.Labels {
-			actual.Labels[fi.StringValue(label.Key)] = fi.StringValue(label.Value)
+			actual.AutoScalerOpts.Labels[fi.StringValue(label.Key)] = fi.StringValue(label.Value)
+		}
+	}
+
+	// Taints.
+	if spec.Taints != nil {
+		if actual.AutoScalerOpts == nil {
+			actual.AutoScalerOpts = new(AutoScalerOpts)
+		}
+
+		actual.AutoScalerOpts.Taints = make([]*corev1.Taint, len(spec.Taints))
+		for i, taint := range spec.Taints {
+			actual.AutoScalerOpts.Taints[i] = &corev1.Taint{
+				Key:    fi.StringValue(taint.Key),
+				Value:  fi.StringValue(taint.Value),
+				Effect: corev1.TaintEffect(fi.StringValue(taint.Effect)),
+			}
+		}
+	}
+
+	// Strategy.
+	{
+		if strategy := spec.Strategy; strategy != nil {
+			if strategy.SpotPercentage != nil {
+				actual.SpotPercentage = fi.Int64(int64(fi.IntValue(strategy.SpotPercentage)))
+			}
 		}
 	}
 
@@ -199,7 +350,7 @@ func (s *LaunchSpec) CheckChanges(a, e, changes *LaunchSpec) error {
 }
 
 func (o *LaunchSpec) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *LaunchSpec) error {
-	return o.createOrUpdate(t.Cloud.(awsup.AWSCloud), a, e, changes)
+	return o.createOrUpdate(t.Cloud, a, e, changes)
 }
 
 func (o *LaunchSpec) createOrUpdate(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) error {
@@ -211,16 +362,28 @@ func (o *LaunchSpec) createOrUpdate(cloud awsup.AWSCloud, a, e, changes *LaunchS
 }
 
 func (_ *LaunchSpec) create(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) error {
-	ocean, err := e.Ocean.find(cloud.Spotinst().Ocean(), *e.Ocean.Name)
+	ocean, err := e.Ocean.find(cloud.Spotinst().Ocean())
 	if err != nil {
 		return err
 	}
 
 	klog.V(2).Infof("Creating Launch Spec for Ocean %q", *ocean.ID)
 
-	spec := new(aws.LaunchSpec)
+	spec := &aws.LaunchSpec{
+		Strategy: new(aws.LaunchSpecStrategy),
+	}
+
 	spec.SetName(e.Name)
 	spec.SetOceanId(ocean.ID)
+
+	// Capacity.
+	{
+		if e.MinSize != nil || e.MaxSize != nil {
+			spec.ResourceLimits = new(aws.ResourceLimits)
+			spec.ResourceLimits.SetMinInstanceCount(fi.Int(int(*e.MinSize)))
+			spec.ResourceLimits.SetMaxInstanceCount(fi.Int(int(*e.MaxSize)))
+		}
+	}
 
 	// Image.
 	{
@@ -236,12 +399,15 @@ func (_ *LaunchSpec) create(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 	// User data.
 	{
 		if e.UserData != nil {
-			userData, err := e.UserData.AsString()
+			userData, err := fi.ResourceAsString(e.UserData)
 			if err != nil {
 				return err
 			}
-			encoded := base64.StdEncoding.EncodeToString([]byte(userData))
-			spec.SetUserData(fi.String(encoded))
+
+			if len(userData) > 0 {
+				encoded := base64.StdEncoding.EncodeToString([]byte(userData))
+				spec.SetUserData(fi.String(encoded))
+			}
 		}
 	}
 
@@ -251,6 +417,20 @@ func (_ *LaunchSpec) create(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 			iprof := new(aws.IAMInstanceProfile)
 			iprof.SetName(e.IAMInstanceProfile.GetName())
 			spec.SetIAMInstanceProfile(iprof)
+		}
+	}
+
+	// Root volume options.
+	{
+		if opts := e.RootVolumeOpts; opts != nil {
+			rootDevice, err := buildRootDevice(cloud, e.RootVolumeOpts, e.ImageID)
+			if err != nil {
+				return err
+			}
+
+			spec.SetBlockDeviceMappings([]*aws.BlockDeviceMapping{
+				e.convertBlockDeviceMapping(rootDevice),
+			})
 		}
 	}
 
@@ -265,40 +445,121 @@ func (_ *LaunchSpec) create(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 		}
 	}
 
-	// Labels.
+	// Subnets.
 	{
-		if e.Labels != nil && len(e.Labels) > 0 {
-			var labels []*aws.Label
-			for k, v := range e.Labels {
-				labels = append(labels, &aws.Label{
-					Key:   fi.String(k),
-					Value: fi.String(v),
-				})
+		if e.Subnets != nil {
+			subnetIDs := make([]string, len(e.Subnets))
+			for i, subnet := range e.Subnets {
+				subnetIDs[i] = fi.StringValue(subnet.ID)
 			}
-			spec.SetLabels(labels)
+			spec.SetSubnetIDs(subnetIDs)
 		}
 	}
 
-	// Wrap the raw object as an LaunchSpec.
+	// Public IP.
+	{
+		if e.AssociatePublicIPAddress != nil {
+			spec.SetAssociatePublicIPAddress(e.AssociatePublicIPAddress)
+		}
+	}
+
+	// Instance types.
+	{
+		if e.InstanceTypes != nil {
+			spec.SetInstanceTypes(e.InstanceTypes)
+		}
+	}
+
+	// Tags.
+	{
+		if e.Tags != nil {
+			spec.SetTags(e.buildTags())
+		}
+	}
+
+	// Auto Scaler.
+	{
+		if opts := e.AutoScalerOpts; opts != nil {
+			// Headroom.
+			if headroom := opts.Headroom; headroom != nil {
+				autoScale := new(aws.AutoScale)
+				autoScale.Headrooms = []*aws.AutoScaleHeadroom{
+					{
+						CPUPerUnit:    headroom.CPUPerUnit,
+						GPUPerUnit:    headroom.GPUPerUnit,
+						MemoryPerUnit: headroom.MemPerUnit,
+						NumOfUnits:    headroom.NumOfUnits,
+					},
+				}
+				spec.SetAutoScale(autoScale)
+			}
+
+			// Labels.
+			if len(opts.Labels) > 0 {
+				var labels []*aws.Label
+				for k, v := range opts.Labels {
+					labels = append(labels, &aws.Label{
+						Key:   fi.String(k),
+						Value: fi.String(v),
+					})
+				}
+				spec.SetLabels(labels)
+			}
+
+			// Taints.
+			if len(opts.Taints) > 0 {
+				taints := make([]*aws.Taint, len(opts.Taints))
+				for i, taint := range opts.Taints {
+					taints[i] = &aws.Taint{
+						Key:    fi.String(taint.Key),
+						Value:  fi.String(taint.Value),
+						Effect: fi.String(string(taint.Effect)),
+					}
+				}
+				spec.SetTaints(taints)
+			}
+		}
+	}
+
+	// Strategy.
+	{
+		if e.SpotPercentage != nil {
+			spec.Strategy.SetSpotPercentage(fi.Int(int(*e.SpotPercentage)))
+		}
+	}
+
+	// Restrictions.
+	{
+		if fi.BoolValue(e.RestrictScaleDown) {
+			spec.SetRestrictScaleDown(e.RestrictScaleDown)
+		}
+	}
+
+	// Wrap the raw object as a LaunchSpec.
 	sp, err := spotinst.NewLaunchSpec(cloud.ProviderID(), spec)
 	if err != nil {
 		return err
 	}
 
 	// Create a new LaunchSpec.
-	id, err := cloud.Spotinst().LaunchSpec().Create(context.Background(), sp)
+	_, err = cloud.Spotinst().LaunchSpec().Create(context.Background(), sp)
 	if err != nil {
 		return fmt.Errorf("spotinst: failed to create launch spec: %v", err)
 	}
 
-	e.ID = fi.String(id)
 	return nil
 }
 
 func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) error {
-	klog.V(2).Infof("Updating Launch Spec for Ocean %q", *a.Ocean.ID)
+	klog.V(2).Infof("Updating Launch Spec for Ocean %q", *a.Ocean.Name)
 
-	actual, err := e.find(cloud.Spotinst().LaunchSpec(), *a.Ocean.ID)
+	ocean, err := a.Ocean.find(cloud.Spotinst().Ocean())
+	if err != nil {
+		klog.Errorf("Unable to resolve Ocean %q, error: %v", *a.Ocean.Name, err)
+		return err
+	}
+
+	actual, err := e.find(cloud.Spotinst().LaunchSpec(), *ocean.ID)
 	if err != nil {
 		klog.Errorf("Unable to resolve Launch Spec %q, error: %v", *e.Name, err)
 		return err
@@ -306,7 +567,29 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 
 	var changed bool
 	spec := new(aws.LaunchSpec)
-	spec.SetId(a.ID)
+	spec.SetId(actual.ID)
+
+	// Capacity.
+	{
+		if changes.MinSize != nil {
+			if spec.ResourceLimits == nil {
+				spec.ResourceLimits = new(aws.ResourceLimits)
+			}
+
+			spec.ResourceLimits.SetMinInstanceCount(fi.Int(int(*e.MinSize)))
+			changes.MinSize = nil
+			changed = true
+		}
+		if changes.MaxSize != nil {
+			if spec.ResourceLimits == nil {
+				spec.ResourceLimits = new(aws.ResourceLimits)
+			}
+
+			spec.ResourceLimits.SetMaxInstanceCount(fi.Int(int(*e.MaxSize)))
+			changes.MaxSize = nil
+			changed = true
+		}
+	}
 
 	// Image.
 	{
@@ -316,7 +599,7 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 				return err
 			}
 
-			if *actual.ImageID != *image.ImageId {
+			if fi.StringValue(actual.ImageID) != fi.StringValue(image.ImageId) {
 				spec.SetImageId(image.ImageId)
 			}
 
@@ -328,15 +611,18 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 	// User data.
 	{
 		if changes.UserData != nil {
-			userData, err := e.UserData.AsString()
+			userData, err := fi.ResourceAsString(e.UserData)
 			if err != nil {
 				return err
 			}
-			encoded := base64.StdEncoding.EncodeToString([]byte(userData))
 
-			spec.SetUserData(fi.String(encoded))
+			if len(userData) > 0 {
+				encoded := base64.StdEncoding.EncodeToString([]byte(userData))
+				spec.SetUserData(fi.String(encoded))
+				changed = true
+			}
+
 			changes.UserData = nil
-			changed = true
 		}
 	}
 
@@ -348,6 +634,23 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 
 			spec.SetIAMInstanceProfile(iprof)
 			changes.IAMInstanceProfile = nil
+			changed = true
+		}
+	}
+
+	// Root volume options.
+	{
+		if opts := changes.RootVolumeOpts; opts != nil {
+			rootDevice, err := buildRootDevice(cloud, opts, e.ImageID)
+			if err != nil {
+				return err
+			}
+
+			spec.SetRootVolumeSize(nil) // mutually exclusive
+			spec.SetBlockDeviceMappings([]*aws.BlockDeviceMapping{
+				e.convertBlockDeviceMapping(rootDevice),
+			})
+			changes.RootVolumeOpts = nil
 			changed = true
 		}
 	}
@@ -366,46 +669,165 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 		}
 	}
 
-	// Labels.
+	// Subnets.
 	{
-		if changes.Labels != nil {
-			labels := make([]*aws.Label, 0, len(e.Labels))
-			for k, v := range e.Labels {
-				labels = append(labels, &aws.Label{
-					Key:   fi.String(k),
-					Value: fi.String(v),
-				})
+		if changes.Subnets != nil {
+			subnetIDs := make([]string, len(e.Subnets))
+			for i, subnet := range e.Subnets {
+				subnetIDs[i] = fi.StringValue(subnet.ID)
 			}
 
-			spec.SetLabels(labels)
-			changes.Labels = nil
+			spec.SetSubnetIDs(subnetIDs)
+			changes.Subnets = nil
 			changed = true
-		} else if a.Labels != nil { // Forcibly remove all existing labels.
-			spec.SetLabels(nil)
+		}
+	}
+
+	// Public IP.
+	{
+		if changes.AssociatePublicIPAddress != nil {
+			spec.SetAssociatePublicIPAddress(e.AssociatePublicIPAddress)
+			changes.AssociatePublicIPAddress = nil
+			changed = true
+		}
+	}
+
+	// Instance types.
+	{
+		if changes.InstanceTypes != nil {
+			spec.SetInstanceTypes(e.InstanceTypes)
+			changes.InstanceTypes = nil
+			changed = true
+		}
+	}
+
+	// Tags.
+	{
+		if changes.Tags != nil {
+			spec.SetTags(e.buildTags())
+			changes.Tags = nil
+			changed = true
+		}
+	}
+
+	// Auto Scaler.
+	{
+		if opts := changes.AutoScalerOpts; opts != nil {
+			// Headroom.
+			if headroom := opts.Headroom; headroom != nil {
+				autoScale := new(aws.AutoScale)
+				autoScale.Headrooms = []*aws.AutoScaleHeadroom{
+					{
+						CPUPerUnit:    e.AutoScalerOpts.Headroom.CPUPerUnit,
+						GPUPerUnit:    e.AutoScalerOpts.Headroom.GPUPerUnit,
+						MemoryPerUnit: e.AutoScalerOpts.Headroom.MemPerUnit,
+						NumOfUnits:    e.AutoScalerOpts.Headroom.NumOfUnits,
+					},
+				}
+
+				spec.SetAutoScale(autoScale)
+				opts.Headroom = nil
+				changed = true
+			}
+
+			// Labels.
+			if opts.Labels != nil {
+				labels := make([]*aws.Label, 0, len(e.AutoScalerOpts.Labels))
+				for k, v := range e.AutoScalerOpts.Labels {
+					labels = append(labels, &aws.Label{
+						Key:   fi.String(k),
+						Value: fi.String(v),
+					})
+				}
+
+				spec.SetLabels(labels)
+				opts.Labels = nil
+				changed = true
+			}
+
+			// Taints.
+			if opts.Taints != nil {
+				taints := make([]*aws.Taint, 0, len(e.AutoScalerOpts.Taints))
+				for _, taint := range e.AutoScalerOpts.Taints {
+					taints = append(taints, &aws.Taint{
+						Key:    fi.String(taint.Key),
+						Value:  fi.String(taint.Value),
+						Effect: fi.String(string(taint.Effect)),
+					})
+				}
+
+				spec.SetTaints(taints)
+				opts.Taints = nil
+				changed = true
+			}
+
+			changes.AutoScalerOpts = nil
+		}
+	}
+
+	// Strategy.
+	{
+		// Spot percentage.
+		if changes.SpotPercentage != nil {
+			if spec.Strategy == nil {
+				spec.Strategy = new(aws.LaunchSpecStrategy)
+			}
+
+			spec.Strategy.SetSpotPercentage(fi.Int(int(fi.Int64Value(e.SpotPercentage))))
+			changes.SpotPercentage = nil
+			changed = true
+		}
+	}
+
+	// Restrictions.
+	{
+		if changes.RestrictScaleDown != nil {
+			spec.SetRestrictScaleDown(e.RestrictScaleDown)
+			changes.RestrictScaleDown = nil
 			changed = true
 		}
 	}
 
 	empty := &LaunchSpec{}
 	if !reflect.DeepEqual(empty, changes) {
-		klog.Warningf("Not all changes applied to Launch Spec %q: %v", *spec.ID, changes)
+		klog.Warningf("Not all changes applied to Launch Spec %q: %v", *e.Name, changes)
 	}
 
 	if !changed {
-		klog.V(2).Infof("No changes detected in Launch Spec %q", *spec.ID)
+		klog.V(2).Infof("No changes detected in Launch Spec %q", *e.Name)
 		return nil
 	}
 
-	klog.V(2).Infof("Updating Launch Spec %q (config: %s)", *spec.ID, stringutil.Stringify(spec))
+	klog.V(2).Infof("Updating Launch Spec %q (config: %s)", *e.Name, stringutil.Stringify(spec))
+	ctx := context.Background()
 
-	// Wrap the raw object as an LaunchSpec.
+	// Reset the Spot percentage on the Cluster level.
+	if spec.Strategy != nil && spec.Strategy.SpotPercentage != nil &&
+		ocean.Strategy != nil && ocean.Strategy.SpotPercentage != nil {
+		c := &aws.Cluster{Strategy: new(aws.Strategy)}
+		c.SetId(ocean.ID)
+		c.Strategy.SetSpotPercentage(nil)
+
+		// Wrap the raw object as a Cluster.
+		o, err := spotinst.NewOcean(cloud.ProviderID(), c)
+		if err != nil {
+			return err
+		}
+
+		// Update the existing Cluster.
+		if err = cloud.Spotinst().Ocean().Update(ctx, o); err != nil {
+			return err
+		}
+	}
+
+	// Wrap the raw object as a Launch Spec.
 	sp, err := spotinst.NewLaunchSpec(cloud.ProviderID(), spec)
 	if err != nil {
 		return err
 	}
 
-	// Update an existing LaunchSpec.
-	if err := cloud.Spotinst().LaunchSpec().Update(context.Background(), sp); err != nil {
+	// Update the existing Launch Spec.
+	if err = cloud.Spotinst().LaunchSpec().Update(ctx, sp); err != nil {
 		return fmt.Errorf("spotinst: failed to update launch spec: %v", err)
 	}
 
@@ -413,10 +835,52 @@ func (_ *LaunchSpec) update(cloud awsup.AWSCloud, a, e, changes *LaunchSpec) err
 }
 
 type terraformLaunchSpec struct {
-	Name    *string            `json:"name,omitempty"`
-	OceanID *terraform.Literal `json:"ocean_id,omitempty"`
+	Name    *string                  `cty:"name"`
+	OceanID *terraformWriter.Literal `cty:"ocean_id"`
 
-	*terraformOceanLaunchSpec
+	Monitoring               *bool                              `cty:"monitoring"`
+	EBSOptimized             *bool                              `cty:"ebs_optimized"`
+	ImageID                  *string                            `cty:"image_id"`
+	AssociatePublicIPAddress *bool                              `cty:"associate_public_ip_address"`
+	RestrictScaleDown        *bool                              `cty:"restrict_scale_down"`
+	RootVolumeSize           *int64                             `cty:"root_volume_size"`
+	UserData                 *terraformWriter.Literal           `cty:"user_data"`
+	IAMInstanceProfile       *terraformWriter.Literal           `cty:"iam_instance_profile"`
+	KeyName                  *terraformWriter.Literal           `cty:"key_name"`
+	InstanceTypes            []string                           `cty:"instance_types"`
+	SubnetIDs                []*terraformWriter.Literal         `cty:"subnet_ids"`
+	SecurityGroups           []*terraformWriter.Literal         `cty:"security_groups"`
+	Taints                   []*terraformTaint                  `cty:"taints"`
+	Labels                   []*terraformKV                     `cty:"labels"`
+	Tags                     []*terraformKV                     `cty:"tags"`
+	Headrooms                []*terraformAutoScalerHeadroom     `cty:"autoscale_headrooms"`
+	BlockDeviceMappings      []*terraformBlockDeviceMapping     `cty:"block_device_mappings"`
+	Strategy                 *terraformLaunchSpecStrategy       `cty:"strategy"`
+	ResourceLimits           *terraformLaunchSpecResourceLimits `cty:"resource_limits"`
+}
+
+type terraformLaunchSpecStrategy struct {
+	SpotPercentage *int64 `cty:"spot_percentage"`
+}
+
+type terraformLaunchSpecResourceLimits struct {
+	MinInstanceCount *int64 `cty:"min_instance_count"`
+	MaxInstanceCount *int64 `cty:"max_instance_count"`
+}
+
+type terraformBlockDeviceMapping struct {
+	DeviceName *string                         `cty:"device_name"`
+	EBS        *terraformBlockDeviceMappingEBS `cty:"ebs"`
+}
+
+type terraformBlockDeviceMappingEBS struct {
+	VirtualName         *string `cty:"virtual_name"`
+	VolumeType          *string `cty:"volume_type"`
+	VolumeSize          *int64  `cty:"volume_size"`
+	VolumeIOPS          *int64  `cty:"iops"`
+	VolumeThroughput    *int64  `cty:"throughput"`
+	Encrypted           *bool   `cty:"encrypted"`
+	DeleteOnTermination *bool   `cty:"delete_on_termination"`
 }
 
 func (_ *LaunchSpec) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *LaunchSpec) error {
@@ -425,16 +889,29 @@ func (_ *LaunchSpec) RenderTerraform(t *terraform.TerraformTarget, a, e, changes
 	tf := &terraformLaunchSpec{
 		Name:                     e.Name,
 		OceanID:                  e.Ocean.TerraformLink(),
-		terraformOceanLaunchSpec: &terraformOceanLaunchSpec{},
+		InstanceTypes:            e.InstanceTypes,
+		AssociatePublicIPAddress: e.AssociatePublicIPAddress,
+	}
+
+	// Capacity.
+	{
+		if e.MinSize != nil || e.MaxSize != nil {
+			tf.ResourceLimits = &terraformLaunchSpecResourceLimits{
+				MinInstanceCount: e.MinSize,
+				MaxInstanceCount: e.MaxSize,
+			}
+		}
 	}
 
 	// Image.
-	if e.ImageID != nil {
-		image, err := resolveImage(cloud, fi.StringValue(e.ImageID))
-		if err != nil {
-			return err
+	{
+		if e.ImageID != nil {
+			image, err := resolveImage(cloud, fi.StringValue(e.ImageID))
+			if err != nil {
+				return err
+			}
+			tf.ImageID = image.ImageId
 		}
-		tf.ImageID = image.ImageId
 	}
 
 	var role string
@@ -449,47 +926,185 @@ func (_ *LaunchSpec) RenderTerraform(t *terraform.TerraformTarget, a, e, changes
 	}
 
 	// Security groups.
-	if e.SecurityGroups != nil {
-		for _, sg := range e.SecurityGroups {
-			tf.SecurityGroups = append(tf.SecurityGroups, sg.TerraformLink())
-			if role != "" {
-				if err := t.AddOutputVariableArray(role+"_security_groups", sg.TerraformLink()); err != nil {
-					return err
+	{
+		if e.SecurityGroups != nil {
+			for _, sg := range e.SecurityGroups {
+				tf.SecurityGroups = append(tf.SecurityGroups, sg.TerraformLink())
+				if role != "" {
+					if err := t.AddOutputVariableArray(role+"_security_groups", sg.TerraformLink()); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+
+	// Subnets.
+	{
+		if e.Subnets != nil {
+			for _, subnet := range e.Subnets {
+				tf.SubnetIDs = append(tf.SubnetIDs, subnet.TerraformLink())
+				if role != "" {
+					if err := t.AddOutputVariableArray(role+"_subnet_ids", subnet.TerraformLink()); err != nil {
+						return err
+					}
 				}
 			}
 		}
 	}
 
 	// User data.
-	if e.UserData != nil {
-		var err error
-		tf.UserData, err = t.AddFile("spotinst_ocean_aws_launch_spec", *e.Name, "user_data", e.UserData)
-		if err != nil {
-			return err
+	{
+		if e.UserData != nil {
+			var err error
+			tf.UserData, err = t.AddFileResource("spotinst_ocean_aws_launch_spec", *e.Name, "user_data", e.UserData, false)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
 	// IAM instance profile.
-	if e.IAMInstanceProfile != nil {
-		tf.IAMInstanceProfile = e.IAMInstanceProfile.TerraformLink()
+	{
+		if e.IAMInstanceProfile != nil {
+			tf.IAMInstanceProfile = e.IAMInstanceProfile.TerraformLink()
+		}
 	}
 
-	// Labels.
+	// Root volume options.
+	if opts := e.RootVolumeOpts; opts != nil {
+		rootDevice, err := buildRootDevice(t.Cloud.(awsup.AWSCloud), e.RootVolumeOpts, e.ImageID)
+		if err != nil {
+			return err
+		}
+
+		tf.BlockDeviceMappings = append(tf.BlockDeviceMappings, &terraformBlockDeviceMapping{
+			DeviceName: rootDevice.DeviceName,
+			EBS: &terraformBlockDeviceMappingEBS{
+				VolumeType:          rootDevice.EbsVolumeType,
+				VolumeSize:          rootDevice.EbsVolumeSize,
+				VolumeIOPS:          rootDevice.EbsVolumeIops,
+				VolumeThroughput:    rootDevice.EbsVolumeThroughput,
+				Encrypted:           rootDevice.EbsEncrypted,
+				DeleteOnTermination: fi.Bool(true),
+			},
+		})
+	}
+
+	// Tags.
 	{
-		if e.Labels != nil {
-			tf.Labels = make([]*terraformKV, 0, len(e.Labels))
-			for k, v := range e.Labels {
-				tf.Labels = append(tf.Labels, &terraformKV{
-					Key:   fi.String(k),
-					Value: fi.String(v),
+		if e.Tags != nil {
+			for _, tag := range e.buildTags() {
+				tf.Tags = append(tf.Tags, &terraformKV{
+					Key:   tag.Key,
+					Value: tag.Value,
 				})
 			}
+		}
+	}
+
+	// Auto Scaler.
+	{
+		if opts := e.AutoScalerOpts; opts != nil {
+			// Headroom.
+			if headroom := opts.Headroom; headroom != nil {
+				tf.Headrooms = []*terraformAutoScalerHeadroom{
+					{
+						CPUPerUnit: headroom.CPUPerUnit,
+						GPUPerUnit: headroom.GPUPerUnit,
+						MemPerUnit: headroom.MemPerUnit,
+						NumOfUnits: headroom.NumOfUnits,
+					},
+				}
+			}
+
+			// Labels.
+			if len(opts.Labels) > 0 {
+				tf.Labels = make([]*terraformKV, 0, len(opts.Labels))
+				for k, v := range opts.Labels {
+					tf.Labels = append(tf.Labels, &terraformKV{
+						Key:   fi.String(k),
+						Value: fi.String(v),
+					})
+				}
+			}
+
+			// Taints.
+			if len(opts.Taints) > 0 {
+				tf.Taints = make([]*terraformTaint, len(opts.Taints))
+				for i, taint := range opts.Taints {
+					t := &terraformTaint{
+						Key:    fi.String(taint.Key),
+						Effect: fi.String(string(taint.Effect)),
+					}
+					if taint.Value != "" {
+						t.Value = fi.String(taint.Value)
+					}
+					tf.Taints[i] = t
+				}
+			}
+		}
+	}
+
+	// Strategy.
+	{
+		if e.SpotPercentage != nil {
+			tf.Strategy = &terraformLaunchSpecStrategy{
+				SpotPercentage: e.SpotPercentage,
+			}
+		}
+	}
+
+	// Restrictions.
+	{
+		if fi.BoolValue(e.RestrictScaleDown) {
+			tf.RestrictScaleDown = e.RestrictScaleDown
 		}
 	}
 
 	return t.RenderResource("spotinst_ocean_aws_launch_spec", *e.Name, tf)
 }
 
-func (o *LaunchSpec) TerraformLink() *terraform.Literal {
-	return terraform.LiteralProperty("spotinst_ocean_aws_launch_spec", *o.Name, "id")
+func (o *LaunchSpec) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralProperty("spotinst_ocean_aws_launch_spec", *o.Name, "id")
+}
+
+func (o *LaunchSpec) buildTags() []*aws.Tag {
+	tags := make([]*aws.Tag, 0, len(o.Tags))
+
+	for key, value := range o.Tags {
+		tags = append(tags, &aws.Tag{
+			Key:   fi.String(key),
+			Value: fi.String(value),
+		})
+	}
+
+	return tags
+}
+
+func (o *LaunchSpec) convertBlockDeviceMapping(in *awstasks.BlockDeviceMapping) *aws.BlockDeviceMapping {
+	out := &aws.BlockDeviceMapping{
+		DeviceName:  in.DeviceName,
+		VirtualName: in.VirtualName,
+	}
+
+	if in.EbsDeleteOnTermination != nil || in.EbsVolumeSize != nil || in.EbsVolumeType != nil {
+		out.EBS = &aws.EBS{
+			VolumeType:          in.EbsVolumeType,
+			VolumeSize:          fi.Int(int(fi.Int64Value(in.EbsVolumeSize))),
+			DeleteOnTermination: in.EbsDeleteOnTermination,
+		}
+
+		// IOPS is not valid for gp2 volumes.
+		if in.EbsVolumeIops != nil && fi.StringValue(in.EbsVolumeType) != "gp2" {
+			out.EBS.IOPS = fi.Int(int(fi.Int64Value(in.EbsVolumeIops)))
+		}
+
+		// Throughput is only valid for gp3 volumes.
+		if in.EbsVolumeThroughput != nil && fi.StringValue(in.EbsVolumeType) == "gp3" {
+			out.EBS.Throughput = fi.Int(int(fi.Int64Value(in.EbsVolumeThroughput)))
+		}
+	}
+
+	return out
 }

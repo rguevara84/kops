@@ -1,4 +1,4 @@
-# kops & MFA
+# kOps & MFA
 
 You can secure `kops` with MFA by creating an AWS role & policy that requires MFA to access to the `KOPS_STATE_STORE` bucket. Unfortunately the Go AWS SDK does not transparently support assuming roles with required MFA. This may change in a future version. `kops` plans to support this behavior eventually. You can track progress in this [Github issue](https://github.com/kubernetes/kops/issues/226). If you'd like to use MFA with `kops`, you'll need a work around until then.
 
@@ -62,7 +62,17 @@ Download the script as `kops-mfa`, make it executable, put it on `$PATH`, set th
 
 ## The Workaround #2
 Use [awsudo](https://github.com/makethunder/awsudo) to generate temp credentials. This is similar to previous but shorter:
-```
+```shell
 pip install awsudo
 env $(awsudo ${AWS_PROFILE} | grep AWS | xargs) kops ...
+```
+
+## The Workaround #3
+
+Use [aws-vault](https://github.com/99designs/aws-vault) to generate temp session credentials. After setting up `aws-vault`, use alias for `kops` command. This way terminal will ask for MFA each time the credential session is expired. Commands would be:
+
+```bash
+AWS_PROFILE=sandbox
+aws-vault add $AWS_PROFILE
+alias kops="aws-vault exec ${AWS_PROFILE} -- kops"
 ```

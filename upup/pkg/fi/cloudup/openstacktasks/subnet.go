@@ -21,12 +21,12 @@ import (
 
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=Subnet
+// +kops:fitask
 type Subnet struct {
 	ID         *string
 	Name       *string
@@ -34,7 +34,7 @@ type Subnet struct {
 	CIDR       *string
 	DNSServers []*string
 	Tag        *string
-	Lifecycle  *fi.Lifecycle
+	Lifecycle  fi.Lifecycle
 }
 
 // GetDependencies returns the dependencies of the Port task
@@ -54,7 +54,7 @@ func (s *Subnet) CompareWithID() *string {
 	return s.ID
 }
 
-func NewSubnetTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecycle, subnet *subnets.Subnet, find *Subnet) (*Subnet, error) {
+func NewSubnetTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle fi.Lifecycle, subnet *subnets.Subnet, find *Subnet) (*Subnet, error) {
 	network, err := cloud.GetNetwork(subnet.NetworkID)
 	if err != nil {
 		return nil, fmt.Errorf("NewSubnetTaskFromCloud: Failed to get network with ID %s: %v", subnet.NetworkID, err)
@@ -115,7 +115,7 @@ func (s *Subnet) Run(context *fi.Context) error {
 	return fi.DefaultDeltaRunMethod(s, context)
 }
 
-func (_ *Subnet) CheckChanges(a, e, changes *Subnet) error {
+func (*Subnet) CheckChanges(a, e, changes *Subnet) error {
 	if a == nil {
 		if e.Name == nil {
 			return fi.RequiredField("Name")
@@ -130,9 +130,6 @@ func (_ *Subnet) CheckChanges(a, e, changes *Subnet) error {
 		if changes.Name != nil {
 			return fi.CannotChangeField("Name")
 		}
-		if changes.DNSServers != nil {
-			return fi.CannotChangeField("DNSServers")
-		}
 		if changes.Network != nil {
 			return fi.CannotChangeField("Network")
 		}
@@ -143,7 +140,7 @@ func (_ *Subnet) CheckChanges(a, e, changes *Subnet) error {
 	return nil
 }
 
-func (_ *Subnet) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Subnet) error {
+func (*Subnet) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Subnet) error {
 	if a == nil {
 		klog.V(2).Infof("Creating Subnet with name:%q", fi.StringValue(e.Name))
 
@@ -176,9 +173,27 @@ func (_ *Subnet) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes 
 		klog.V(2).Infof("Creating a new Openstack subnet, id=%s", v.ID)
 		return nil
 	} else {
-		err := t.Cloud.AppendTag(openstack.ResourceTypeSubnet, fi.StringValue(a.ID), fi.StringValue(changes.Tag))
-		if err != nil {
-			return fmt.Errorf("Error appending tag to subnet: %v", err)
+		if changes.Tag != nil {
+			err := t.Cloud.AppendTag(openstack.ResourceTypeSubnet, fi.StringValue(a.ID), fi.StringValue(changes.Tag))
+			if err != nil {
+				return fmt.Errorf("error appending tag to subnet: %v", err)
+			}
+		}
+		client := t.Cloud.NetworkingClient()
+
+		opt := subnets.UpdateOpts{}
+
+		if changes.DNSServers != nil {
+			dnsNameSrv := make([]string, len(e.DNSServers))
+			for i, ns := range e.DNSServers {
+				dnsNameSrv[i] = fi.StringValue(ns)
+			}
+			opt.DNSNameservers = &dnsNameSrv
+		}
+		result := subnets.Update(client, fi.StringValue(a.ID), opt)
+		klog.Infof("Updated %v", opt)
+		if result.Err != nil {
+			return fmt.Errorf("error updating subnet %v: %v", a.ID, result.Err)
 		}
 	}
 	e.ID = a.ID

@@ -19,12 +19,11 @@ package fi
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"reflect"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/util/pkg/vfs"
@@ -66,7 +65,7 @@ func NewContext(target Target, cluster *kops.Cluster, cloud Cloud, keystore Keys
 		tasks:             tasks,
 	}
 
-	t, err := ioutil.TempDir("", "deploy")
+	t, err := os.MkdirTemp("", "deploy")
 	if err != nil {
 		return nil, fmt.Errorf("error creating temporary directory: %v", err)
 	}
@@ -102,7 +101,7 @@ func (c *Context) Close() {
 //}
 
 func (c *Context) NewTempDir(prefix string) (string, error) {
-	t, err := ioutil.TempDir(c.Tmpdir, prefix)
+	t, err := os.MkdirTemp(c.Tmpdir, prefix)
 	if err != nil {
 		return "", fmt.Errorf("error creating temporary directory: %v", err)
 	}
@@ -115,22 +114,21 @@ var typeContextPtr = reflect.TypeOf((*Context)(nil))
 // it is typically called after we have checked the existing state of the Task and determined that is different
 // from the desired state.
 func (c *Context) Render(a, e, changes Task) error {
-	var lifecycle *Lifecycle
+	var lifecycle Lifecycle
 	if hl, ok := e.(HasLifecycle); ok {
 		lifecycle = hl.GetLifecycle()
 	}
 
-	if lifecycle != nil {
+	if lifecycle != "" {
 		if reflect.ValueOf(a).IsNil() {
-
-			switch *lifecycle {
+			switch lifecycle {
 			case LifecycleExistsAndValidates:
-				return fmt.Errorf("Lifecycle set to ExistsAndValidates, but object was not found")
+				return fmt.Errorf("lifecycle set to ExistsAndValidates, but object was not found")
 			case LifecycleExistsAndWarnIfChanges:
 				return NewExistsAndWarnIfChangesError("Lifecycle set to ExistsAndWarnIfChanges and object was not found.")
 			}
 		} else {
-			switch *lifecycle {
+			switch lifecycle {
 			case LifecycleExistsAndValidates, LifecycleExistsAndWarnIfChanges:
 
 				out := os.Stderr
@@ -157,12 +155,11 @@ func (c *Context) Render(a, e, changes Task) error {
 				fmt.Fprintf(b, "\n")
 				b.WriteTo(out)
 
-				if *lifecycle == LifecycleExistsAndValidates {
-					return fmt.Errorf("Lifecycle set to ExistsAndValidates, but object did not match")
-				} else {
-					// Warn, but then we continue
-					return nil
+				if lifecycle == LifecycleExistsAndValidates {
+					return fmt.Errorf("lifecycle set to ExistsAndValidates, but object did not match")
 				}
+				// Warn, but then we continue
+				return nil
 			}
 		}
 	}
@@ -205,7 +202,12 @@ func (c *Context) Render(a, e, changes Task) error {
 		}
 		if match {
 			if renderer != nil {
-				return fmt.Errorf("Found multiple Render methods that could be invokved on %T", e)
+				if method.Name == "Render" {
+					continue
+				}
+				if renderer.Name != "Render" {
+					return fmt.Errorf("found multiple Render methods that could be involved on %T", e)
+				}
 			}
 			renderer = &method
 			rendererArgs = args
@@ -213,7 +215,7 @@ func (c *Context) Render(a, e, changes Task) error {
 
 	}
 	if renderer == nil {
-		return fmt.Errorf("Could not find Render method on type %T (target %T)", e, c.Target)
+		return fmt.Errorf("could not find Render method on type %T (target %T)", e, c.Target)
 	}
 	rendererArgs = append(rendererArgs, reflect.ValueOf(a))
 	rendererArgs = append(rendererArgs, reflect.ValueOf(e))
@@ -247,7 +249,7 @@ type ExistsAndWarnIfChangesError struct {
 	msg string
 }
 
-// NewWarnIfInsufficientAccessError is a builder for ExistsAndWarnIfChangesError.
+// NewExistsAndWarnIfChangesError is a builder for ExistsAndWarnIfChangesError.
 func NewExistsAndWarnIfChangesError(message string) *ExistsAndWarnIfChangesError {
 	return &ExistsAndWarnIfChangesError{
 		msg: message,
@@ -256,3 +258,18 @@ func NewExistsAndWarnIfChangesError(message string) *ExistsAndWarnIfChangesError
 
 // ExistsAndWarnIfChangesError implementation of the error interface.
 func (e *ExistsAndWarnIfChangesError) Error() string { return e.msg }
+
+// TryAgainLaterError is the custom used when a task needs to fail validation with a message and try again later
+type TryAgainLaterError struct {
+	msg string
+}
+
+// NewTryAgainLaterError is a builder for TryAgainLaterError.
+func NewTryAgainLaterError(message string) *TryAgainLaterError {
+	return &TryAgainLaterError{
+		msg: message,
+	}
+}
+
+// TryAgainLaterError implementation of the error interface.
+func (e *TryAgainLaterError) Error() string { return e.msg }

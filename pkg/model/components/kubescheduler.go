@@ -17,8 +17,6 @@ limitations under the License.
 package components
 
 import (
-	"fmt"
-
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/loader"
@@ -39,17 +37,13 @@ func (b *KubeSchedulerOptionsBuilder) BuildOptions(o interface{}) error {
 
 	config := clusterSpec.KubeScheduler
 
-	if config.UsePolicyConfigMap != nil && b.IsKubernetesLT("v1.7.0") {
-		return fmt.Errorf("usePolicyConfigMap is only supported in Kubernetes 1.7.0 or later")
-	}
-
 	if config.LogLevel == 0 {
 		// TODO: No way to set to 0?
 		config.LogLevel = 2
 	}
 
 	if config.Image == "" {
-		image, err := Image("kube-scheduler", b.Architecture(), clusterSpec, b.AssetBuilder)
+		image, err := Image("kube-scheduler", clusterSpec, b.AssetBuilder)
 		if err != nil {
 			return err
 		}
@@ -63,12 +57,25 @@ func (b *KubeSchedulerOptionsBuilder) BuildOptions(o interface{}) error {
 		}
 	}
 
-	if config.Master == "" {
-		if b.IsKubernetesLT("1.6") {
-			// Backwards compatibility with pre-RBAC/pre-1.6 way of doing things
-			config.Master = "http://127.0.0.1:8080"
+	if clusterSpec.CloudConfig != nil && clusterSpec.CloudConfig.AWSEBSCSIDriver != nil && fi.BoolValue(clusterSpec.CloudConfig.AWSEBSCSIDriver.Enabled) {
+
+		if config.FeatureGates == nil {
+			config.FeatureGates = make(map[string]string)
+		}
+
+		if b.IsKubernetesLT("1.21.0") {
+			if _, found := config.FeatureGates["CSIMigrationAWSComplete"]; !found {
+				config.FeatureGates["CSIMigrationAWSComplete"] = "true"
+			}
+		} else {
+			if _, found := config.FeatureGates["InTreePluginAWSUnregister"]; !found {
+				config.FeatureGates["InTreePluginAWSUnregister"] = "true"
+			}
+		}
+
+		if _, found := config.FeatureGates["CSIMigrationAWS"]; !found {
+			config.FeatureGates["CSIMigrationAWS"] = "true"
 		}
 	}
-
 	return nil
 }

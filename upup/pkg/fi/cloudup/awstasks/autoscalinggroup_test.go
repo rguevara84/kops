@@ -25,7 +25,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"github.com/ghodss/yaml"
+	"sigs.k8s.io/yaml"
 )
 
 func TestGetASGTagsToDelete(t *testing.T) {
@@ -201,12 +201,12 @@ func TestAutoscalingGroupTerraformRender(t *testing.T) {
 	cases := []*renderTest{
 		{
 			Resource: &AutoscalingGroup{
-				Name:                fi.String("test"),
-				Granularity:         fi.String("5min"),
-				LaunchConfiguration: &LaunchConfiguration{Name: fi.String("test_lc")},
-				MaxSize:             fi.Int64(10),
-				Metrics:             []string{"test"},
-				MinSize:             fi.Int64(1),
+				Name:           fi.String("test"),
+				Granularity:    fi.String("5min"),
+				LaunchTemplate: &LaunchTemplate{Name: fi.String("test_lc")},
+				MaxSize:        fi.Int64(10),
+				Metrics:        []string{"test"},
+				MinSize:        fi.Int64(1),
 				Subnets: []*Subnet{
 					{
 						Name: fi.String("test-sg"),
@@ -223,43 +223,51 @@ func TestAutoscalingGroupTerraformRender(t *testing.T) {
 }
 
 resource "aws_autoscaling_group" "test" {
-  name                 = "test"
-  launch_configuration = "${aws_launch_configuration.test_lc.id}"
-  max_size             = 10
-  min_size             = 1
-  vpc_zone_identifier  = ["${aws_subnet.test-sg.id}"]
-
-  tag = {
-    key                 = "cluster"
-    value               = "test"
-    propagate_at_launch = true
+  enabled_metrics = ["test"]
+  launch_template {
+    id      = aws_launch_template.test_lc.id
+    version = aws_launch_template.test_lc.latest_version
   }
-
-  tag = {
-    key                 = "test"
-    value               = "tag"
-    propagate_at_launch = true
-  }
-
+  max_size            = 10
   metrics_granularity = "5min"
-  enabled_metrics     = ["test"]
+  min_size            = 1
+  name                = "test"
+  tag {
+    key                 = "cluster"
+    propagate_at_launch = true
+    value               = "test"
+  }
+  tag {
+    key                 = "test"
+    propagate_at_launch = true
+    value               = "tag"
+  }
+  vpc_zone_identifier = [aws_subnet.test-sg.id]
 }
 
-terraform = {
-  required_version = ">= 0.9.3"
+terraform {
+  required_version = ">= 0.15.0"
+  required_providers {
+    aws = {
+      "configuration_aliases" = [aws.files]
+      "source"                = "hashicorp/aws"
+      "version"               = ">= 4.0.0"
+    }
+  }
 }
 `,
 		},
 		{
 			Resource: &AutoscalingGroup{
-				Name:                   fi.String("test1"),
-				LaunchTemplate:         &LaunchTemplate{Name: fi.String("test_lt")},
-				MaxSize:                fi.Int64(10),
-				Metrics:                []string{"test"},
-				MinSize:                fi.Int64(5),
-				MixedInstanceOverrides: []string{"t2.medium", "t2.large"},
-				MixedOnDemandBase:      fi.Int64(4),
-				MixedOnDemandAboveBase: fi.Int64(30),
+				Name:                        fi.String("test1"),
+				LaunchTemplate:              &LaunchTemplate{Name: fi.String("test_lt")},
+				MaxSize:                     fi.Int64(10),
+				Metrics:                     []string{"test"},
+				MinSize:                     fi.Int64(5),
+				MixedInstanceOverrides:      []string{"t2.medium", "t2.large"},
+				MixedOnDemandBase:           fi.Int64(4),
+				MixedOnDemandAboveBase:      fi.Int64(30),
+				MixedSpotAllocationStrategy: fi.String("capacity-optimized"),
 				Subnets: []*Subnet{
 					{
 						Name: fi.String("test-sg"),
@@ -276,51 +284,51 @@ terraform = {
 }
 
 resource "aws_autoscaling_group" "test1" {
-  name     = "test1"
-  max_size = 10
-  min_size = 5
-
-  mixed_instances_policy = {
-    launch_template = {
-      launch_template_specification = {
-        launch_template_id = "${aws_launch_template.test_lt.id}"
-        version            = "${aws_launch_template.test_lt.latest_version}"
+  enabled_metrics = ["test"]
+  max_size        = 10
+  min_size        = 5
+  mixed_instances_policy {
+    instances_distribution {
+      on_demand_base_capacity                  = 4
+      on_demand_percentage_above_base_capacity = 30
+      spot_allocation_strategy                 = "capacity-optimized"
+    }
+    launch_template {
+      launch_template_specification {
+        launch_template_id = aws_launch_template.test_lt.id
+        version            = aws_launch_template.test_lt.latest_version
       }
-
-      override = {
+      override {
         instance_type = "t2.medium"
       }
-
-      override = {
+      override {
         instance_type = "t2.large"
       }
     }
-
-    instances_distribution = {
-      on_demand_base_capacity                  = 4
-      on_demand_percentage_above_base_capacity = 30
-    }
   }
-
-  vpc_zone_identifier = ["${aws_subnet.test-sg.id}"]
-
-  tag = {
+  name = "test1"
+  tag {
     key                 = "cluster"
+    propagate_at_launch = true
     value               = "test"
-    propagate_at_launch = true
   }
-
-  tag = {
+  tag {
     key                 = "test"
-    value               = "tag"
     propagate_at_launch = true
+    value               = "tag"
   }
-
-  enabled_metrics = ["test"]
+  vpc_zone_identifier = [aws_subnet.test-sg.id]
 }
 
-terraform = {
-  required_version = ">= 0.9.3"
+terraform {
+  required_version = ">= 0.15.0"
+  required_providers {
+    aws = {
+      "configuration_aliases" = [aws.files]
+      "source"                = "hashicorp/aws"
+      "version"               = ">= 4.0.0"
+    }
+  }
 }
 `,
 		},
@@ -358,8 +366,8 @@ func TestAutoscalingGroupCloudformationRender(t *testing.T) {
       "Type": "AWS::AutoScaling::AutoScalingGroup",
       "Properties": {
         "AutoScalingGroupName": "test1",
-        "MaxSize": 10,
-        "MinSize": 5,
+        "MaxSize": "10",
+        "MinSize": "5",
         "VPCZoneIdentifier": [
           {
             "Ref": "AWSEC2Subnettestsg"
@@ -388,7 +396,15 @@ func TestAutoscalingGroupCloudformationRender(t *testing.T) {
         "MixedInstancesPolicy": {
           "LaunchTemplate": {
             "LaunchTemplateSpecification": {
-              "LaunchTemplateName": "test_lt"
+              "LaunchTemplateId": {
+                "Ref": "AWSEC2LaunchTemplatetest_lt"
+              },
+              "Version": {
+                "Fn::GetAtt": [
+                  "AWSEC2LaunchTemplatetest_lt",
+                  "LatestVersionNumber"
+                ]
+              }
             },
             "Overrides": [
               {

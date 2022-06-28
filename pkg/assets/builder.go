@@ -17,7 +17,6 @@ limitations under the License.
 package assets
 
 import (
-	"bytes"
 	"fmt"
 	"net/url"
 	"os"
@@ -26,40 +25,52 @@ import (
 	"strings"
 	"time"
 
-	"github.com/blang/semver"
+	"github.com/blang/semver/v4"
+	"github.com/google/go-containerregistry/pkg/authn"
+	"github.com/google/go-containerregistry/pkg/crane"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/util"
 	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/kubemanifest"
 	"k8s.io/kops/pkg/values"
 	"k8s.io/kops/util/pkg/hashing"
+	"k8s.io/kops/util/pkg/mirrors"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
-// RewriteManifests controls whether we rewrite manifests
-// Because manifest rewriting converts everything to and from YAML, we normalize everything by doing so
-var RewriteManifests = featureflag.New("RewriteManifests", featureflag.Bool(true))
-
 // AssetBuilder discovers and remaps assets.
 type AssetBuilder struct {
-	ContainerAssets []*ContainerAsset
-	FileAssets      []*FileAsset
-	AssetsLocation  *kops.Assets
-	// TODO we'd like to use cloudup.Phase here, but that introduces a go cyclic dependency
-	Phase string
+	ImageAssets    []*ImageAsset
+	FileAssets     []*FileAsset
+	AssetsLocation *kops.Assets
+	GetAssets      bool
 
 	// KubernetesVersion is the version of kubernetes we are installing
 	KubernetesVersion semver.Version
+
+	// StaticManifests records static manifests
+	StaticManifests []*StaticManifest
 }
 
-// ContainerAsset models a container's location.
-type ContainerAsset struct {
-	// DockerImage will be the name of the container we should run.
-	// This is used to copy a container to a ContainerRegistry.
-	DockerImage string
-	// CanonicalLocation will be the source location of the container.
+type StaticManifest struct {
+	// Key is the unique identifier of the manifest
+	Key string
+
+	// Path is the path to the manifest
+	Path string
+
+	// The static manifest will only be applied to instances matching the specified role
+	Roles []kops.InstanceGroupRole
+}
+
+// ImageAsset models an image's location.
+type ImageAsset struct {
+	// DownloadLocation will be the name of the image we should run.
+	// This is used to copy an image to a ContainerRegistry.
+	DownloadLocation string
+	// CanonicalLocation will be the source location of the image.
 	CanonicalLocation string
 }
 
@@ -74,10 +85,10 @@ type FileAsset struct {
 }
 
 // NewAssetBuilder creates a new AssetBuilder.
-func NewAssetBuilder(cluster *kops.Cluster, phase string) *AssetBuilder {
+func NewAssetBuilder(cluster *kops.Cluster, getAssets bool) *AssetBuilder {
 	a := &AssetBuilder{
 		AssetsLocation: cluster.Spec.Assets,
-		Phase:          phase,
+		GetAssets:      getAssets,
 	}
 
 	version, err := util.ParseKubernetesVersion(cluster.Spec.KubernetesVersion)
@@ -95,49 +106,28 @@ func NewAssetBuilder(cluster *kops.Cluster, phase string) *AssetBuilder {
 // This will:
 // * rewrite the images if they are being redirected to a mirror, and ensure the image is uploaded
 func (a *AssetBuilder) RemapManifest(data []byte) ([]byte, error) {
-	if !RewriteManifests.Enabled() {
-		return data, nil
-	}
-
-	manifests, err := kubemanifest.LoadManifestsFrom(data)
+	objects, err := kubemanifest.LoadObjectsFrom(data)
 	if err != nil {
 		return nil, err
 	}
 
-	var yamlSeparator = []byte("\n---\n\n")
-	var remappedManifests [][]byte
-	for _, manifest := range manifests {
-		if err := manifest.RemapImages(a.RemapImage); err != nil {
+	for _, object := range objects {
+		if err := object.RemapImages(a.RemapImage); err != nil {
 			return nil, fmt.Errorf("error remapping images: %v", err)
 		}
-
-		y, err := manifest.ToYAML()
-		if err != nil {
-			return nil, fmt.Errorf("error re-marshaling manifest: %v", err)
-		}
-
-		remappedManifests = append(remappedManifests, y)
 	}
 
-	return bytes.Join(remappedManifests, yamlSeparator), nil
+	return objects.ToYAML()
 }
 
 // RemapImage normalizes a containers location if a user sets the AssetsLocation ContainerRegistry location.
 func (a *AssetBuilder) RemapImage(image string) (string, error) {
-	asset := &ContainerAsset{}
-
-	asset.DockerImage = image
-
-	// The k8s.gcr.io prefix is an alias, but for CI builds we run from a docker load,
-	// and we only double-tag from 1.10 onwards.
-	// For versions prior to 1.10, remap k8s.gcr.io to the old name.
-	// This also means that we won't start using the aliased names on existing clusters,
-	// which could otherwise be surprising to users.
-	if !util.IsKubernetesGTE("1.10", a.KubernetesVersion) && strings.HasPrefix(image, "k8s.gcr.io/") {
-		image = "gcr.io/google_containers/" + strings.TrimPrefix(image, "k8s.gcr.io/")
+	asset := &ImageAsset{
+		DownloadLocation:  image,
+		CanonicalLocation: image,
 	}
 
-	if strings.HasPrefix(image, "kope/dns-controller:") {
+	if strings.HasPrefix(image, "k8s.gcr.io/kops/dns-controller:") || strings.HasPrefix(image, "registry.k8s.io/kops/dns-controller:") {
 		// To use user-defined DNS Controller:
 		// 1. DOCKER_REGISTRY=[your docker hub repo] make dns-controller-push
 		// 2. export DNSCONTROLLER_IMAGE=[your docker hub repo]
@@ -148,7 +138,7 @@ func (a *AssetBuilder) RemapImage(image string) (string, error) {
 		}
 	}
 
-	if strings.HasPrefix(image, "kope/kops-controller:") {
+	if strings.HasPrefix(image, "k8s.gcr.io/kops/kops-controller:") || strings.HasPrefix(image, "registry.k8s.io/kops/kops-controller:") {
 		// To use user-defined DNS Controller:
 		// 1. DOCKER_REGISTRY=[your docker hub repo] make kops-controller-push
 		// 2. export KOPSCONTROLLER_IMAGE=[your docker hub repo]
@@ -159,36 +149,40 @@ func (a *AssetBuilder) RemapImage(image string) (string, error) {
 		}
 	}
 
+	if strings.HasPrefix(image, "k8s.gcr.io/kops/kube-apiserver-healthcheck:") || strings.HasPrefix(image, "registry.k8s.io/kops/kube-apiserver-healthcheck:") {
+		override := os.Getenv("KUBE_APISERVER_HEALTHCHECK_IMAGE")
+		if override != "" {
+			image = override
+		}
+	}
+
 	if a.AssetsLocation != nil && a.AssetsLocation.ContainerProxy != nil {
-		containerProxy := strings.TrimRight(*a.AssetsLocation.ContainerProxy, "/")
+		containerProxy := strings.TrimSuffix(*a.AssetsLocation.ContainerProxy, "/")
 		normalized := image
 
-		// If the image name contains only a single / we need to determine if the image is located on docker-hub or if it's using a convenient URL like k8s.gcr.io/<image-name>
+		// If the image name contains only a single / we need to determine if the image is located on docker-hub or if it's using a convenient URL,
+		// like k8s.gcr.io/<image-name> or registry.k8s.io/<image-name>
 		// In case of a hub image it should be sufficient to just prepend the proxy url, producing eg docker-proxy.example.com/weaveworks/weave-kube
 		if strings.Count(normalized, "/") <= 1 && !strings.ContainsAny(strings.Split(normalized, "/")[0], ".:") {
 			normalized = containerProxy + "/" + normalized
 		} else {
-			var re = regexp.MustCompile(`^[^/]+`)
+			re := regexp.MustCompile(`^[^/]+`)
 			normalized = re.ReplaceAllString(normalized, containerProxy)
 		}
 
-		asset.DockerImage = normalized
-		asset.CanonicalLocation = image
+		asset.DownloadLocation = normalized
 
 		// Run the new image
-		image = asset.DockerImage
+		image = asset.DownloadLocation
 	}
 
 	if a.AssetsLocation != nil && a.AssetsLocation.ContainerRegistry != nil {
 		registryMirror := *a.AssetsLocation.ContainerRegistry
 		normalized := image
 
-		// Remove the 'standard' kubernetes image prefix, just for sanity
-		if !util.IsKubernetesGTE("1.10", a.KubernetesVersion) && strings.HasPrefix(normalized, "gcr.io/google_containers/") {
-			normalized = strings.TrimPrefix(normalized, "gcr.io/google_containers/")
-		} else {
-			normalized = strings.TrimPrefix(normalized, "k8s.gcr.io/")
-		}
+		// Remove the 'standard' kubernetes image prefixes, just for sanity
+		normalized = strings.TrimPrefix(normalized, "k8s.gcr.io/")
+		normalized = strings.TrimPrefix(normalized, "registry.k8s.io/")
 
 		// When assembling the cluster spec, kops may call the option more then once until the config converges
 		// This means that this function may me called more than once on the same image
@@ -199,20 +193,33 @@ func (a *AssetBuilder) RemapImage(image string) (string, error) {
 			// We can't nest arbitrarily
 			// Some risk of collisions, but also -- and __ in the names appear to be blocked by docker hub
 			normalized = strings.Replace(normalized, "/", "-", -1)
-			asset.DockerImage = registryMirror + "/" + normalized
+			asset.DownloadLocation = registryMirror + "/" + normalized
 		}
 
-		asset.CanonicalLocation = image
-
 		// Run the new image
-		image = asset.DockerImage
+		image = asset.DownloadLocation
 	}
 
-	a.ContainerAssets = append(a.ContainerAssets, asset)
-	return image, nil
+	a.ImageAssets = append(a.ImageAssets, asset)
+
+	if !featureflag.ImageDigest.Enabled() || os.Getenv("KOPS_BASE_URL") != "" {
+		return image, nil
+	}
+
+	if strings.Contains(image, "@") {
+		return image, nil
+	}
+
+	digest, err := crane.Digest(image, crane.WithAuthFromKeychain(authn.DefaultKeychain))
+	if err != nil {
+		klog.Warningf("failed to digest image %q", image)
+		return image, nil
+	}
+
+	return image + "@" + digest, nil
 }
 
-// RemapFileAndSHA returns a remapped url for the file, if AssetsLocation is defined.
+// RemapFileAndSHA returns a remapped URL for the file, if AssetsLocation is defined.
 // It also returns the SHA hash of the file.
 func (a *AssetBuilder) RemapFileAndSHA(fileURL *url.URL) (*url.URL, *hashing.Hash, error) {
 	if fileURL == nil {
@@ -220,11 +227,11 @@ func (a *AssetBuilder) RemapFileAndSHA(fileURL *url.URL) (*url.URL, *hashing.Has
 	}
 
 	fileAsset := &FileAsset{
-		DownloadURL: fileURL,
+		DownloadURL:  fileURL,
+		CanonicalURL: fileURL,
 	}
 
 	if a.AssetsLocation != nil && a.AssetsLocation.FileRepository != nil {
-		fileAsset.CanonicalURL = fileURL
 
 		normalizedFileURL, err := a.remapURL(fileURL)
 		if err != nil {
@@ -242,28 +249,25 @@ func (a *AssetBuilder) RemapFileAndSHA(fileURL *url.URL) (*url.URL, *hashing.Has
 	}
 	fileAsset.SHAValue = h.Hex()
 
-	a.FileAssets = append(a.FileAssets, fileAsset)
 	klog.V(8).Infof("adding file: %+v", fileAsset)
+	a.FileAssets = append(a.FileAssets, fileAsset)
 
 	return fileAsset.DownloadURL, h, nil
 }
 
-// TODO - remove this method as CNI does now have a SHA file
-
-// RemapFileAndSHAValue is used exclusively to remap the cni tarball, as the tarball does not have a sha file in object storage.
+// RemapFileAndSHAValue returns a remapped URL for the file without a SHA file in object storage, if AssetsLocation is defined.
 func (a *AssetBuilder) RemapFileAndSHAValue(fileURL *url.URL, shaValue string) (*url.URL, error) {
 	if fileURL == nil {
 		return nil, fmt.Errorf("unable to remap a nil URL")
 	}
 
 	fileAsset := &FileAsset{
-		DownloadURL: fileURL,
-		SHAValue:    shaValue,
+		DownloadURL:  fileURL,
+		CanonicalURL: fileURL,
+		SHAValue:     shaValue,
 	}
 
 	if a.AssetsLocation != nil && a.AssetsLocation.FileRepository != nil {
-		fileAsset.CanonicalURL = fileURL
-
 		normalizedFile, err := a.remapURL(fileURL)
 		if err != nil {
 			return nil, err
@@ -273,6 +277,7 @@ func (a *AssetBuilder) RemapFileAndSHAValue(fileURL *url.URL, shaValue string) (
 		klog.V(4).Infof("adding remapped file: %q", fileAsset.DownloadURL.String())
 	}
 
+	klog.V(8).Infof("adding file: %+v", fileAsset)
 	a.FileAssets = append(a.FileAssets, fileAsset)
 
 	return fileAsset.DownloadURL, nil
@@ -280,7 +285,6 @@ func (a *AssetBuilder) RemapFileAndSHAValue(fileURL *url.URL, shaValue string) (
 
 // FindHash returns the hash value of a FileAsset.
 func (a *AssetBuilder) findHash(file *FileAsset) (*hashing.Hash, error) {
-
 	// If the phase is "assets" we use the CanonicalFileURL,
 	// but during other phases we use the hash from the FileRepository or the base kops path.
 	// We do not want to just test for CanonicalFileURL as it is defined in
@@ -294,7 +298,7 @@ func (a *AssetBuilder) findHash(file *FileAsset) (*hashing.Hash, error) {
 	// rest of the time. If not we get a chicken and the egg problem where we are reading the sha file
 	// before it exists.
 	u := file.DownloadURL
-	if a.Phase == "assets" && file.CanonicalURL != nil {
+	if a.GetAssets {
 		u = file.CanonicalURL
 	}
 
@@ -314,32 +318,34 @@ func (a *AssetBuilder) findHash(file *FileAsset) (*hashing.Hash, error) {
 		}
 
 		for _, ext := range []string{".sha256", ".sha1"} {
-			hashURL := u.String() + ext
-			b, err := vfs.Context.ReadFile(hashURL, vfs.WithBackoff(backoff))
-			if err != nil {
-				// Try to log without being too alarming - issue #7550
-				if ext == ".sha256" {
-					klog.V(2).Infof("unable to read new sha256 hash file (is this an older/unsupported kubernetes release?) %q: %v", hashURL, err)
-				} else {
-					klog.V(2).Infof("unable to read hash file %q: %v", hashURL, err)
+			for _, mirror := range mirrors.FindUrlMirrors(u.String()) {
+				hashURL := mirror + ext
+				klog.V(3).Infof("Trying to read hash fie: %q", hashURL)
+				b, err := vfs.Context.ReadFile(hashURL, vfs.WithBackoff(backoff))
+				if err != nil {
+					// Try to log without being too alarming - issue #7550
+					klog.V(2).Infof("Unable to read hash file %q: %v", hashURL, err)
+					continue
 				}
-				continue
-			}
-			hashString := strings.TrimSpace(string(b))
-			klog.V(2).Infof("Found hash %q for %q", hashString, u)
+				hashString := strings.TrimSpace(string(b))
+				klog.V(2).Infof("Found hash %q for %q", hashString, u)
 
-			// Accept a hash string that is `<hash> <filename>`
-			fields := strings.Fields(hashString)
-			if len(fields) == 0 {
-				klog.Infof("hash file was empty %q", hashURL)
-				continue
+				// Accept a hash string that is `<hash> <filename>`
+				fields := strings.Fields(hashString)
+				if len(fields) == 0 {
+					klog.Infof("Hash file was empty %q", hashURL)
+					continue
+				}
+				return hashing.FromString(fields[0])
 			}
-			return hashing.FromString(fields[0])
+			if ext == ".sha256" {
+				klog.V(2).Infof("Unable to read new sha256 hash file (is this an older/unsupported kubernetes release?)")
+			}
 		}
 	}
 
 	if a.AssetsLocation != nil && a.AssetsLocation.FileRepository != nil {
-		return nil, fmt.Errorf("you may have not staged your files correctly, please execute kops update cluster using the assets phase")
+		return nil, fmt.Errorf("you might have not staged your files correctly, please execute 'kops get assets --copy'")
 	}
 	return nil, fmt.Errorf("cannot determine hash for %q (have you specified a valid file location?)", u)
 }

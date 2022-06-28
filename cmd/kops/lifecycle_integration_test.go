@@ -17,7 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"fmt"
+	"os"
 	"path"
 	"reflect"
 	"sort"
@@ -26,11 +30,16 @@ import (
 	"time"
 
 	"k8s.io/kops/cloudmock/aws/mockec2"
+	gcemock "k8s.io/kops/cloudmock/gce"
 	"k8s.io/kops/cmd/kops/util"
+	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/commands"
+	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/pkg/testutils"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
 type LifecycleTestOptions struct {
@@ -54,11 +63,35 @@ func (o *LifecycleTestOptions) AddDefaults() {
 	o.SrcDir = "../../tests/integration/update_cluster/" + o.SrcDir
 }
 
-// TestLifecycleMinimal runs the test on a minimum configuration, similar to kops create cluster minimal.example.com --zones us-west-1a
-func TestLifecycleMinimal(t *testing.T) {
+// TestLifecycleMinimalAWS runs the test on a minimum configuration, similar to kops create cluster minimal.example.com --zones us-west-1a
+func TestLifecycleMinimalAWS(t *testing.T) {
 	runLifecycleTestAWS(&LifecycleTestOptions{
 		t:      t,
 		SrcDir: "minimal",
+	})
+}
+
+func TestLifecycleMinimalOpenstack(t *testing.T) {
+	runLifecycleTestOpenstack(&LifecycleTestOptions{
+		t:           t,
+		SrcDir:      "minimal_openstack",
+		ClusterName: "minimal-openstack.k8s.local",
+	})
+}
+
+func TestLifecycleMinimalGCE(t *testing.T) {
+	runLifecycleTestGCE(&LifecycleTestOptions{
+		t:           t,
+		SrcDir:      "minimal_gce",
+		ClusterName: "minimal-gce.example.com",
+	})
+}
+
+func TestLifecycleFloatingIPOpenstack(t *testing.T) {
+	runLifecycleTestOpenstack(&LifecycleTestOptions{
+		t:           t,
+		SrcDir:      "openstack_floatingip",
+		ClusterName: "floatingip-openstack.k8s.local",
 	})
 }
 
@@ -79,11 +112,35 @@ func TestLifecyclePrivateKopeio(t *testing.T) {
 	})
 }
 
+// TestLifecycleIPv6 runs the test on a IPv6 topology
+func TestLifecycleIPv6(t *testing.T) {
+	runLifecycleTestAWS(&LifecycleTestOptions{
+		t:      t,
+		SrcDir: "minimal-ipv6",
+	})
+}
+
 // TestLifecycleSharedVPC runs the test on a shared VPC
 func TestLifecycleSharedVPC(t *testing.T) {
 	runLifecycleTestAWS(&LifecycleTestOptions{
 		t:      t,
 		SrcDir: "shared_vpc",
+	})
+}
+
+// TestLifecycleComplex runs the test on a complex cluster
+func TestLifecycleComplex(t *testing.T) {
+	runLifecycleTestAWS(&LifecycleTestOptions{
+		t:      t,
+		SrcDir: "complex",
+	})
+}
+
+// TestLifecycleExternlLB runs the test on a cluster with external load balancers and target groups attached
+func TestLifecycleExternalLB(t *testing.T) {
+	runLifecycleTestAWS(&LifecycleTestOptions{
+		t:      t,
+		SrcDir: "externallb",
 	})
 }
 
@@ -105,7 +162,33 @@ func TestLifecyclePrivateSharedSubnet(t *testing.T) {
 	})
 }
 
+// TestLifecyclePrivateSharedIP runs the test on a subnet with private topology and shared IP
+func TestLifecyclePrivateSharedIP(t *testing.T) {
+	runLifecycleTestAWS(&LifecycleTestOptions{
+		t:      t,
+		SrcDir: "private-shared-ip",
+		Shared: []string{"eipalloc-12345678"},
+	})
+}
+
+// TestLifecycleNodeTerminationHandlerQueueProcessor runs the test on a cluster with requisite resources for NTH Queue Processor
+func TestLifecycleNodeTerminationHandlerQueueProcessor(t *testing.T) {
+	runLifecycleTestAWS(&LifecycleTestOptions{
+		t:           t,
+		SrcDir:      "nth_sqs_resources",
+		ClusterName: "nthsqsresources.longclustername.example.com",
+	})
+}
+
 func runLifecycleTest(h *testutils.IntegrationTestHarness, o *LifecycleTestOptions, cloud *awsup.MockAWSCloud) {
+	ctx := context.Background()
+
+	featureflag.ParseFlags("+SpecOverrideFlag")
+	unsetFeatureFlags := func() {
+		featureflag.ParseFlags("-SpecOverrideFlag")
+	}
+	defer unsetFeatureFlags()
+
 	t := o.t
 
 	t.Logf("running lifecycle test for cluster %s", o.ClusterName)
@@ -114,77 +197,89 @@ func runLifecycleTest(h *testutils.IntegrationTestHarness, o *LifecycleTestOptio
 
 	inputYAML := "in-" + o.Version + ".yaml"
 
-	factoryOptions := &util.FactoryOptions{}
-	factoryOptions.RegistryPath = "memfs://tests"
+	beforeResources := AllAWSResources(cloud)
 
-	factory := util.NewFactory(factoryOptions)
+	factory := newIntegrationTest(o.ClusterName, o.SrcDir).
+		setupCluster(t, inputYAML, ctx, stdout)
 
-	beforeResources := AllResources(cloud)
+	updateEnsureNoChanges(ctx, t, factory, o.ClusterName, stdout)
 
+	// Overrides
 	{
-		options := &CreateOptions{}
-		options.Filenames = []string{path.Join(o.SrcDir, inputYAML)}
-
-		err := RunCreate(factory, &stdout, options)
+		cluster, err := GetCluster(ctx, factory, o.ClusterName)
 		if err != nil {
-			t.Fatalf("error running %q create: %v", inputYAML, err)
+			t.Fatalf("error getting cluster: %v", err)
 		}
-	}
-
-	{
-		options := &CreateSecretPublickeyOptions{}
-		options.ClusterName = o.ClusterName
-		options.Name = "admin"
-		options.PublicKeyPath = path.Join(o.SrcDir, "id_rsa.pub")
-
-		err := RunCreateSecretPublicKey(factory, &stdout, options)
+		clientset, err := factory.Clientset()
 		if err != nil {
-			t.Fatalf("error running %q create: %v", inputYAML, err)
-		}
-	}
-
-	{
-		options := &UpdateClusterOptions{}
-		options.InitDefaults()
-		options.RunTasksOptions.MaxTaskDuration = 10 * time.Second
-		options.Yes = true
-
-		// We don't test it here, and it adds a dependency on kubectl
-		options.CreateKubecfg = false
-
-		_, err := RunUpdateCluster(factory, o.ClusterName, &stdout, options)
-		if err != nil {
-			t.Fatalf("error running update cluster %q: %v", o.ClusterName, err)
-		}
-	}
-
-	{
-		options := &UpdateClusterOptions{}
-		options.InitDefaults()
-		options.Target = cloudup.TargetDryRun
-		options.RunTasksOptions.MaxTaskDuration = 10 * time.Second
-
-		// We don't test it here, and it adds a dependency on kubectl
-		options.CreateKubecfg = false
-
-		results, err := RunUpdateCluster(factory, o.ClusterName, &stdout, options)
-		if err != nil {
-			t.Fatalf("error running update cluster %q: %v", o.ClusterName, err)
+			t.Fatalf("error getting clientset: %v", err)
 		}
 
-		target := results.Target.(*fi.DryRunTarget)
-		if target.HasChanges() {
-			var b bytes.Buffer
-			if err := target.PrintReport(results.TaskMap, &b); err != nil {
-				t.Fatalf("error building report: %v", err)
+		overrides, err := loadOverrides(path.Join(o.SrcDir, "cluster.overrides.txt"))
+		if err != nil {
+			t.Fatalf("error loading overrides file: %v", err)
+		}
+		for _, overrideBatch := range overrides {
+			t.Logf("overriding cluster values %v\n", overrideBatch)
+			instanceGroups, err := commands.ReadAllInstanceGroups(ctx, clientset, cluster)
+			if err != nil {
+				t.Fatalf("error reading instance groups: %v", err)
 			}
-			t.Fatalf("Target had changes after executing: %v", b.String())
+
+			if err := commands.SetClusterFields(overrideBatch, cluster); err != nil {
+				t.Fatalf("error setting cluster fields: %v", err)
+			}
+
+			if err := commands.UpdateCluster(ctx, clientset, cluster, instanceGroups); err != nil {
+				t.Fatalf("error updating cluster: %v", err)
+			}
+			updateEnsureNoChanges(ctx, t, factory, o.ClusterName, stdout)
+		}
+
+		instanceGroups, err := commands.ReadAllInstanceGroups(ctx, clientset, cluster)
+		if err != nil {
+			t.Fatalf("error reading instance groups: %v", err)
+		}
+		for _, ig := range instanceGroups {
+			overrideFile := path.Join(o.SrcDir, fmt.Sprintf("instancegroup.%v.overrides.txt", ig.Name))
+			overrides, err := loadOverrides(overrideFile)
+			if err != nil {
+				t.Fatalf("error loading overrides file: %v", err)
+			}
+
+			for _, overrideBatch := range overrides {
+				t.Logf("overriding instance group values (%v) %v\n", ig.Name, overrideBatch)
+				instanceGroups, err := commands.ReadAllInstanceGroups(ctx, clientset, cluster)
+				if err != nil {
+					t.Fatalf("error reading instance groups: %v", err)
+				}
+				var instanceGroupToUpdate *kops.InstanceGroup
+				for _, instanceGroup := range instanceGroups {
+					if instanceGroup.GetName() == ig.Name {
+						instanceGroupToUpdate = instanceGroup
+					}
+				}
+				if instanceGroupToUpdate == nil {
+					t.Fatalf("unable to find instance group with name %q", ig.Name)
+				}
+
+				err = commands.SetInstancegroupFields(overrideBatch, instanceGroupToUpdate)
+				if err != nil {
+					t.Fatalf("error applying overrides: %v", err)
+				}
+
+				err = commands.UpdateInstanceGroup(ctx, clientset, cluster, instanceGroups, instanceGroupToUpdate)
+				if err != nil {
+					t.Fatalf("error updating instance groups: %v", err)
+				}
+				updateEnsureNoChanges(ctx, t, factory, o.ClusterName, stdout)
+			}
 		}
 	}
 
 	{
 		var ids []string
-		for id := range AllResources(cloud) {
+		for id := range AllAWSResources(cloud) {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
@@ -226,6 +321,7 @@ func runLifecycleTest(h *testutils.IntegrationTestHarness, o *LifecycleTestOptio
 				switch resource {
 				case "ami":
 				case "sshkey":
+				case "lt":
 					// ignore
 
 				default:
@@ -246,16 +342,34 @@ func runLifecycleTest(h *testutils.IntegrationTestHarness, o *LifecycleTestOptio
 		options := &DeleteClusterOptions{}
 		options.Yes = true
 		options.ClusterName = o.ClusterName
-		if err := RunDeleteCluster(factory, &stdout, options); err != nil {
+		if err := RunDeleteCluster(ctx, factory, &stdout, options); err != nil {
 			t.Fatalf("error running delete cluster %q: %v", o.ClusterName, err)
 		}
 	}
 }
 
-// AllResources returns all resources
-func AllResources(c *awsup.MockAWSCloud) map[string]interface{} {
+// AllAWSResources returns all resources
+func AllAWSResources(c *awsup.MockAWSCloud) map[string]interface{} {
 	all := make(map[string]interface{})
 	for k, v := range c.MockEC2.(*mockec2.MockEC2).All() {
+		all[k] = v
+	}
+	return all
+}
+
+// AllOpenstackResources returns all resources
+func AllOpenstackResources(c *openstack.MockCloud) map[string]interface{} {
+	all := make(map[string]interface{})
+	for k, v := range c.MockNovaClient.All() {
+		all[k] = v
+	}
+	return all
+}
+
+// AllGCEResources returns all resources
+func AllGCEResources(c *gcemock.MockGCECloud) map[string]interface{} {
+	all := make(map[string]interface{})
+	for k, v := range c.AllResources() {
 		all[k] = v
 	}
 	return all
@@ -269,11 +383,11 @@ func runLifecycleTestAWS(o *LifecycleTestOptions) {
 	h := testutils.NewIntegrationTestHarness(o.t)
 	defer h.Close()
 
-	h.MockKopsVersion("1.8.1")
+	h.MockKopsVersion("1.21.0-alpha.1")
 	cloud := h.SetupMockAWS()
 
 	var beforeIds []string
-	for id := range AllResources(cloud) {
+	for id := range AllAWSResources(cloud) {
 		beforeIds = append(beforeIds, id)
 	}
 	sort.Strings(beforeIds)
@@ -281,7 +395,7 @@ func runLifecycleTestAWS(o *LifecycleTestOptions) {
 	runLifecycleTest(h, o, cloud)
 
 	var afterIds []string
-	for id := range AllResources(cloud) {
+	for id := range AllAWSResources(cloud) {
 		afterIds = append(afterIds, id)
 	}
 	sort.Strings(afterIds)
@@ -289,4 +403,176 @@ func runLifecycleTestAWS(o *LifecycleTestOptions) {
 	if !reflect.DeepEqual(beforeIds, afterIds) {
 		t.Fatalf("resources changed by cluster create / destroy: %v -> %v", beforeIds, afterIds)
 	}
+}
+
+func runLifecycleTestOpenstack(o *LifecycleTestOptions) {
+	o.AddDefaults()
+
+	t := o.t
+
+	h := testutils.NewIntegrationTestHarness(o.t)
+	defer h.Close()
+
+	origRegion := os.Getenv("OS_REGION_NAME")
+	os.Setenv("OS_REGION_NAME", "us-test1")
+	defer func() {
+		os.Setenv("OS_REGION_NAME", origRegion)
+	}()
+
+	h.MockKopsVersion("1.21.0-alpha.1")
+	cloud := testutils.SetupMockOpenstack()
+
+	var beforeIds []string
+	for id := range AllOpenstackResources(cloud) {
+		beforeIds = append(beforeIds, id)
+	}
+	sort.Strings(beforeIds)
+
+	ctx := context.Background()
+
+	t.Logf("running lifecycle test for cluster %s", o.ClusterName)
+
+	var stdout bytes.Buffer
+
+	inputYAML := "in-" + o.Version + ".yaml"
+
+	factory := newIntegrationTest(o.ClusterName, o.SrcDir).
+		setupCluster(t, inputYAML, ctx, stdout)
+
+	updateEnsureNoChanges(ctx, t, factory, o.ClusterName, stdout)
+
+	{
+		options := &DeleteClusterOptions{}
+		options.Yes = true
+		options.ClusterName = o.ClusterName
+		if err := RunDeleteCluster(ctx, factory, &stdout, options); err != nil {
+			t.Fatalf("error running delete cluster %q: %v", o.ClusterName, err)
+		}
+	}
+
+	{
+		var afterIds []string
+		for id := range AllOpenstackResources(cloud) {
+			afterIds = append(afterIds, id)
+		}
+		sort.Strings(afterIds)
+
+		if !reflect.DeepEqual(beforeIds, afterIds) {
+			t.Fatalf("resources changed by cluster create / destroy: %v -> %v", beforeIds, afterIds)
+		}
+	}
+}
+
+func runLifecycleTestGCE(o *LifecycleTestOptions) {
+	o.AddDefaults()
+
+	t := o.t
+
+	h := testutils.NewIntegrationTestHarness(o.t)
+	defer h.Close()
+
+	h.MockKopsVersion("1.21.0-alpha.1")
+
+	cloud := h.SetupMockGCE()
+
+	var beforeIds []string
+	for id := range AllGCEResources(cloud) {
+		beforeIds = append(beforeIds, id)
+	}
+	sort.Strings(beforeIds)
+
+	ctx := context.Background()
+
+	t.Logf("running lifecycle test for cluster %s", o.ClusterName)
+
+	var stdout bytes.Buffer
+	inputYAML := "in-" + o.Version + ".yaml"
+
+	factory := newIntegrationTest(o.ClusterName, o.SrcDir).
+		setupCluster(t, inputYAML, ctx, stdout)
+
+	updateEnsureNoChanges(ctx, t, factory, o.ClusterName, stdout)
+
+	{
+		options := &DeleteClusterOptions{}
+		options.Yes = true
+		options.ClusterName = o.ClusterName
+		if err := RunDeleteCluster(ctx, factory, &stdout, options); err != nil {
+			t.Fatalf("error running delete cluster %q: %v", o.ClusterName, err)
+		}
+	}
+
+	var afterIds []string
+	for id := range AllGCEResources(cloud) {
+		afterIds = append(afterIds, id)
+	}
+	sort.Strings(afterIds)
+
+	if !reflect.DeepEqual(beforeIds, afterIds) {
+		t.Fatalf("resources changed by cluster create / destroy: %v -> %v", beforeIds, afterIds)
+	}
+}
+
+func updateEnsureNoChanges(ctx context.Context, t *testing.T, factory *util.Factory, clusterName string, stdout bytes.Buffer) {
+	t.Helper()
+	options := &UpdateClusterOptions{}
+	options.InitDefaults()
+	options.RunTasksOptions.MaxTaskDuration = 10 * time.Second
+	options.Yes = true
+
+	// We don't test it here, and it adds a dependency on kubectl
+	options.CreateKubecfg = false
+	options.ClusterName = clusterName
+
+	_, err := RunUpdateCluster(ctx, factory, &stdout, options)
+	if err != nil {
+		t.Fatalf("error running update cluster %q: %v", clusterName, err)
+	}
+
+	// Now perform another dryrun update and ensure no changes are reported
+
+	options = &UpdateClusterOptions{}
+	options.InitDefaults()
+	options.Target = cloudup.TargetDryRun
+	options.RunTasksOptions.MaxTaskDuration = 10 * time.Second
+
+	// We don't test it here, and it adds a dependency on kubectl
+	options.CreateKubecfg = false
+	options.ClusterName = clusterName
+
+	results, err := RunUpdateCluster(ctx, factory, &stdout, options)
+	if err != nil {
+		t.Fatalf("error running update cluster %q: %v", clusterName, err)
+	}
+
+	target := results.Target.(*fi.DryRunTarget)
+	if target.HasChanges() {
+		var b bytes.Buffer
+		if err := target.PrintReport(results.TaskMap, &b); err != nil {
+			t.Fatalf("error building report: %v", err)
+		}
+		t.Fatalf("Target had changes after executing: %v", b.String())
+	}
+}
+
+// Returns a list of lists of overrides. each list of overrides will be applied in a batch
+func loadOverrides(filepath string) ([][]string, error) {
+	f, err := os.Open(filepath)
+	if os.IsNotExist(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	overrides := make([][]string, 0)
+	overrides = append(overrides, make([]string, 0))
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "---" {
+			overrides = append(overrides, make([]string, 0))
+			continue
+		}
+		overrides[len(overrides)-1] = append(overrides[len(overrides)-1], line)
+	}
+	return overrides, nil
 }

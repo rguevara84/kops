@@ -26,19 +26,11 @@ import (
 func init() {
 	// Register our custom printer functions
 	reflectutils.RegisterPrinter(PrintResource)
-	reflectutils.RegisterPrinter(PrintResourceHolder)
 	reflectutils.RegisterPrinter(PrintCompareWithID)
 }
 
 func PrintResource(o interface{}) (string, bool) {
 	if _, ok := o.(Resource); !ok {
-		return "", false
-	}
-	return "<resource>", true
-}
-
-func PrintResourceHolder(o interface{}) (string, bool) {
-	if _, ok := o.(*ResourceHolder); !ok {
 		return "", false
 	}
 	return "<resource>", true
@@ -60,16 +52,12 @@ func PrintCompareWithID(o interface{}) (string, bool) {
 		// Uninformative, but we can often print the name instead
 		if name != "" {
 			return fmt.Sprintf("name:%s", name), true
-		} else {
-			return "id:<nil>", true
 		}
-	} else {
-		// Uninformative, but we can often print the name instead
-		if name != "" {
-			return fmt.Sprintf("name:%s id:%s", name, *id), true
-		} else {
-			return fmt.Sprintf("id:%s", *id), true
-		}
-
+		return "id:<nil>", true
 	}
+	// Uninformative, but we can often print the name instead
+	if name != "" {
+		return fmt.Sprintf("name:%s id:%s", name, *id), true
+	}
+	return fmt.Sprintf("id:%s", *id), true
 }

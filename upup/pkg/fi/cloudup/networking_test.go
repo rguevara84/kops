@@ -17,78 +17,78 @@ limitations under the License.
 package cloudup
 
 import (
-	"os"
 	"testing"
 
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/assets"
+	"k8s.io/kops/util/pkg/architectures"
 )
 
 func Test_FindCNIAssetFromEnvironmentVariable(t *testing.T) {
-
 	desiredCNIVersion := "https://storage.googleapis.com/kubernetes-release/network-plugins/cni-TEST-VERSION.tar.gz"
-	os.Setenv(ENV_VAR_CNI_VERSION_URL, desiredCNIVersion)
-	defer func() {
-		os.Unsetenv(ENV_VAR_CNI_VERSION_URL)
-	}()
+	desiredCNIVersionHash := "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+	t.Setenv(ENV_VAR_CNI_ASSET_URL, desiredCNIVersion)
+	t.Setenv(ENV_VAR_CNI_ASSET_HASH, desiredCNIVersionHash)
 
 	cluster := &api.Cluster{}
-	cluster.Spec.KubernetesVersion = "v1.9.0"
+	cluster.Spec.KubernetesVersion = "v1.18.0"
 
-	assetBuilder := assets.NewAssetBuilder(cluster, "")
-	cniAsset, cniAssetHash, err := findCNIAssets(cluster, assetBuilder)
-
+	assetBuilder := assets.NewAssetBuilder(cluster, false)
+	cniAsset, cniAssetHash, err := findCNIAssets(cluster, assetBuilder, architectures.ArchitectureAmd64)
 	if err != nil {
-		t.Errorf("Unable to parse k8s version %s", err)
+		t.Errorf("Unable to parse CNI version %s", err)
 	}
 
 	if cniAsset.String() != desiredCNIVersion {
-		t.Errorf("Expected CNI version from Environment variable %q, but got %q instead", desiredCNIVersion, cniAsset)
+		t.Errorf("Expected CNI version from env var %q, but got %q instead", desiredCNIVersion, cniAsset)
 	}
 
-	if cniAssetHash != nil {
-		t.Errorf("Expected Empty CNI Version Hash String, but got %v instead", cniAssetHash)
+	if cniAssetHash.String() != desiredCNIVersionHash {
+		t.Errorf("Expected empty CNI version hash, but got %v instead", cniAssetHash)
 	}
 }
 
-func Test_FindCNIAssetDefaultValue1_6(t *testing.T) {
+func Test_FindCNIAssetFromDefaults118(t *testing.T) {
+	desiredCNIVersionURL := "https://storage.googleapis.com/k8s-artifacts-cni/release/v0.8.7/cni-plugins-linux-amd64-v0.8.7.tgz"
+	desiredCNIVersionHash := "sha256:977824932d5667c7a37aa6a3cbba40100a6873e7bd97e83e8be837e3e7afd0a8"
 
 	cluster := &api.Cluster{}
-	cluster.Spec.KubernetesVersion = "v1.7.0"
-	assetBuilder := assets.NewAssetBuilder(cluster, "")
-	cniAsset, cniAssetHash, err := findCNIAssets(cluster, assetBuilder)
+	cluster.Spec.KubernetesVersion = "v1.18.0"
 
+	assetBuilder := assets.NewAssetBuilder(cluster, false)
+	cniAsset, cniAssetHash, err := findCNIAssets(cluster, assetBuilder, architectures.ArchitectureAmd64)
 	if err != nil {
-		t.Errorf("Unable to parse k8s version %s", err)
+		t.Errorf("Unable to parse CNI version %s", err)
 	}
 
-	if cniAsset.String() != defaultCNIAssetK8s1_6 {
-		t.Errorf("Expected default CNI version %q and got %q", defaultCNIAssetK8s1_5, cniAsset)
+	if cniAsset.String() != desiredCNIVersionURL {
+		t.Errorf("Expected default CNI version %q, but got %q instead", desiredCNIVersionURL, cniAsset)
 	}
 
-	if cniAssetHash.Hex() != defaultCNIAssetHashStringK8s1_6 {
-		t.Errorf("Expected default CNI Version Hash String %q and got %v", defaultCNIAssetHashStringK8s1_5, cniAssetHash)
+	if cniAssetHash.String() != desiredCNIVersionHash {
+		t.Errorf("Expected default CNI version hash %q, but got %q instead", desiredCNIVersionHash, cniAssetHash)
 	}
-
 }
 
-func Test_FindCNIAssetDefaultValue1_5(t *testing.T) {
+func Test_FindCNIAssetFromDefaults122(t *testing.T) {
+	desiredCNIVersionURL := "https://storage.googleapis.com/k8s-artifacts-cni/release/v0.9.1/cni-plugins-linux-amd64-v0.9.1.tgz"
+	desiredCNIVersionHash := "sha256:962100bbc4baeaaa5748cdbfce941f756b1531c2eadb290129401498bfac21e7"
 
 	cluster := &api.Cluster{}
-	cluster.Spec.KubernetesVersion = "v1.5.12"
-	assetBuilder := assets.NewAssetBuilder(cluster, "")
-	cniAsset, cniAssetHash, err := findCNIAssets(cluster, assetBuilder)
+	cluster.Spec.KubernetesVersion = "v1.22.0"
 
+	assetBuilder := assets.NewAssetBuilder(cluster, false)
+	cniAsset, cniAssetHash, err := findCNIAssets(cluster, assetBuilder, architectures.ArchitectureAmd64)
 	if err != nil {
-		t.Errorf("Unable to parse k8s version %s", err)
+		t.Errorf("Unable to parse CNI version %s", err)
 	}
 
-	if cniAsset.String() != defaultCNIAssetK8s1_5 {
-		t.Errorf("Expected default CNI version %q and got %q", defaultCNIAssetK8s1_5, cniAsset)
+	if cniAsset.String() != desiredCNIVersionURL {
+		t.Errorf("Expected default CNI version %q, but got %q instead", desiredCNIVersionURL, cniAsset)
 	}
 
-	if cniAssetHash.Hex() != defaultCNIAssetHashStringK8s1_5 {
-		t.Errorf("Expected default CNI Version Hash String %q and got %v", defaultCNIAssetHashStringK8s1_5, cniAssetHash)
+	if cniAssetHash.String() != desiredCNIVersionHash {
+		t.Errorf("Expected default CNI version hash %q, but got %q instead", desiredCNIVersionHash, cniAssetHash)
 	}
-
 }

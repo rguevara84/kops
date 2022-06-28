@@ -1,0 +1,10 @@
+ClusterName: gce.example.com
+Zones:
+- us-test1-a
+MasterZones:
+- us-test1-a
+CloudProvider: gce
+Networking: cni
+KubernetesVersion: v1.21.0
+Project: testproject
+GCEServiceAccount: test-account@testproject.iam.gserviceaccount.com

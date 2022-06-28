@@ -20,11 +20,10 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-type visitorBase struct {
-}
+type visitorBase struct{}
 
 func (m *visitorBase) VisitString(path []string, v string, mutator func(string)) error {
 	klog.V(10).Infof("string value at %s: %s", strings.Join(path, "."), v)
@@ -48,6 +47,10 @@ type Visitor interface {
 }
 
 func visit(visitor Visitor, data interface{}, path []string, mutator func(interface{})) error {
+	if data == nil {
+		return nil
+	}
+
 	switch data := data.(type) {
 	case string:
 		err := visitor.VisitString(path, data, func(v string) {
@@ -72,7 +75,7 @@ func visit(visitor Visitor, data interface{}, path []string, mutator func(interf
 		if err != nil {
 			return err
 		}
-
+	case nil:
 	case map[string]interface{}:
 		m := data
 		for k, v := range m {

@@ -26,8 +26,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"os"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type Certificate struct {
@@ -149,4 +150,16 @@ func (c *Certificate) WriteTo(w io.Writer) (int64, error) {
 		return 0, err
 	}
 	return b.WriteTo(w)
+}
+
+func (c *Certificate) WriteToFile(filename string, perm os.FileMode) error {
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, err = c.WriteTo(f)
+	if err1 := f.Close(); err == nil {
+		err = err1
+	}
+	return err
 }

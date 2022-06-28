@@ -22,7 +22,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // applyChannel is responsible for applying the channel manifests
@@ -36,8 +36,8 @@ func applyChannel(channel string) error {
 }
 
 func execChannels(args ...string) (string, error) {
-	kubectlPath := "channels" // Assume in PATH
-	cmd := exec.Command(kubectlPath, args...)
+	channelsPath := "/opt/kops/bin/channels"
+	cmd := exec.Command(channelsPath, args...)
 	env := os.Environ()
 	cmd.Env = env
 

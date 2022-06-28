@@ -19,37 +19,48 @@ package openstacktasks
 import (
 	"fmt"
 	"strconv"
+	"strings"
+
+	l3floatingip "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/layer3/floatingips"
+	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
 
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/bootfromvolume"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/keypairs"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/extensions/schedulerhints"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=Instance
+// +kops:fitask
 type Instance struct {
 	ID               *string
 	Name             *string
+	GroupName        *string
 	Port             *Port
 	Region           *string
 	Flavor           *string
 	Image            *string
 	SSHKey           *string
 	ServerGroup      *ServerGroup
-	Tags             []string
 	Role             *string
-	UserData         *string
+	UserData         fi.Resource
 	Metadata         map[string]string
 	AvailabilityZone *string
 	SecurityGroups   []string
+	FloatingIP       *FloatingIP
+	ConfigDrive      *bool
 
-	Lifecycle *fi.Lifecycle
+	Lifecycle    fi.Lifecycle
+	ForAPIServer bool
 }
 
-var _ fi.HasAddress = &Instance{}
+var (
+	_ fi.Task            = &Instance{}
+	_ fi.HasAddress      = &Instance{}
+	_ fi.HasDependencies = &Instance{}
+)
 
 // GetDependencies returns the dependencies of the Instance task
 func (e *Instance) GetDependencies(tasks map[string]fi.Task) []fi.Task {
@@ -61,7 +72,15 @@ func (e *Instance) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 		if _, ok := task.(*Port); ok {
 			deps = append(deps, task)
 		}
+		if _, ok := task.(*FloatingIP); ok {
+			deps = append(deps, task)
+		}
 	}
+
+	if e.UserData != nil {
+		deps = append(deps, fi.FindDependencies(tasks, e.UserData)...)
+	}
+
 	return deps
 }
 
@@ -75,7 +94,11 @@ func (e *Instance) CompareWithID() *string {
 	return e.ID
 }
 
-func (e *Instance) FindIPAddress(context *fi.Context) (*string, error) {
+func (e *Instance) IsForAPIServer() bool {
+	return e.ForAPIServer
+}
+
+func (e *Instance) FindAddresses(context *fi.Context) ([]string, error) {
 	cloud := context.Cloud.(openstack.OpenstackCloud)
 	if e.Port == nil {
 		return nil, nil
@@ -87,7 +110,7 @@ func (e *Instance) FindIPAddress(context *fi.Context) (*string, error) {
 	}
 
 	for _, port := range ports.FixedIPs {
-		return fi.String(port.IPAddress), nil
+		return []string{port.IPAddress}, nil
 	}
 
 	return nil, nil
@@ -97,32 +120,108 @@ func (e *Instance) Find(c *fi.Context) (*Instance, error) {
 	if e == nil || e.Name == nil {
 		return nil, nil
 	}
-	serverPage, err := servers.List(c.Cloud.(openstack.OpenstackCloud).ComputeClient(), servers.ListOpts{
-		Name: fmt.Sprintf("^%s$", fi.StringValue(e.Name)),
+	cloud := c.Cloud.(openstack.OpenstackCloud)
+	computeClient := cloud.ComputeClient()
+	serverPage, err := servers.List(computeClient, servers.ListOpts{
+		Name: fmt.Sprintf("^%s", fi.StringValue(e.GroupName)),
 	}).AllPages()
 	if err != nil {
-		return nil, fmt.Errorf("error finding server with name %s: %v", fi.StringValue(e.Name), err)
+		return nil, fmt.Errorf("error listing servers: %v", err)
 	}
 	serverList, err := servers.ExtractServers(serverPage)
 	if err != nil {
 		return nil, fmt.Errorf("error extracting server page: %v", err)
 	}
-	if len(serverList) == 0 {
+
+	var filteredList []servers.Server
+	for _, server := range serverList {
+		val, ok := server.Metadata["k8s"]
+		if !ok || val != fi.StringValue(e.ServerGroup.ClusterName) {
+			continue
+		}
+		metadataName := ""
+		val, ok = server.Metadata[openstack.TagKopsName]
+		if ok {
+			metadataName = val
+		}
+		// name or metadata tag should match to instance name
+		// this is needed for backwards compatibility
+		if server.Name == fi.StringValue(e.Name) || metadataName == fi.StringValue(e.Name) {
+			filteredList = append(filteredList, server)
+		}
+	}
+
+	if filteredList == nil {
 		return nil, nil
 	}
-	if len(serverList) > 1 {
+	if len(filteredList) > 1 {
 		return nil, fmt.Errorf("Multiple servers found with name %s", fi.StringValue(e.Name))
 	}
 
-	server := serverList[0]
+	server := filteredList[0]
 	actual := &Instance{
 		ID:               fi.String(server.ID),
-		Name:             fi.String(server.Name),
+		Name:             e.Name,
 		SSHKey:           fi.String(server.KeyName),
 		Lifecycle:        e.Lifecycle,
+		Metadata:         server.Metadata,
+		Role:             fi.String(server.Metadata["KopsRole"]),
 		AvailabilityZone: e.AvailabilityZone,
+		GroupName:        e.GroupName,
+		ConfigDrive:      e.ConfigDrive,
 	}
+
+	ports, err := cloud.ListPorts(ports.ListOpts{
+		DeviceID: server.ID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch port for instance %v: %v", server.ID, err)
+	}
+
+	if len(ports) == 1 {
+		port := ports[0]
+		porttask, err := newPortTaskFromCloud(cloud, e.Lifecycle, &port, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch port for instance %v: %v", server.ID, err)
+		}
+		actual.Port = porttask
+
+	} else if len(ports) > 1 {
+		return nil, fmt.Errorf("found more than one port for instance %v", server.ID)
+	}
+
+	if e.FloatingIP != nil && e.Port != nil {
+		fips, err := cloud.ListL3FloatingIPs(l3floatingip.ListOpts{
+			PortID: fi.StringValue(e.Port.ID),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch floating ips for instance %v: %v", server.ID, err)
+		}
+
+		if len(fips) == 1 {
+			fip := fips[0]
+			fipTask := &FloatingIP{
+				ID:   fi.String(fip.ID),
+				Name: fi.String(fip.Description),
+			}
+
+			actual.FloatingIP = fipTask
+		} else if len(fips) > 1 {
+			return nil, fmt.Errorf("found more than one floating ip for instance %v", server.ID)
+		}
+	}
+
+	// Avoid flapping
 	e.ID = actual.ID
+	actual.ForAPIServer = e.ForAPIServer
+
+	// Immutable fields
+	actual.Flavor = e.Flavor
+	actual.Image = e.Image
+	actual.UserData = e.UserData
+	actual.Region = e.Region
+	actual.SSHKey = e.SSHKey
+	actual.ServerGroup = e.ServerGroup
 
 	return actual, nil
 }
@@ -148,28 +247,75 @@ func (_ *Instance) CheckChanges(a, e, changes *Instance) error {
 }
 
 func (_ *Instance) ShouldCreate(a, e, changes *Instance) (bool, error) {
-	return a == nil, nil
+	if a == nil {
+		return true, nil
+	}
+	if changes.Port != nil {
+		return true, nil
+	}
+	if changes.FloatingIP != nil {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// generateInstanceName generates name for the instance
+// the instance format is [GroupName]-[6 character hash]
+func generateInstanceName(e *Instance) (string, error) {
+	secret, err := fi.CreateSecret()
+	if err != nil {
+		return "", err
+	}
+
+	hash, err := secret.AsString()
+	if err != nil {
+		return "", err
+	}
+
+	return strings.ToLower(fmt.Sprintf("%s-%s", fi.StringValue(e.GroupName), hash[0:6])), nil
 }
 
 func (_ *Instance) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Instance) error {
+	cloud := t.Cloud
 	if a == nil {
-		klog.V(2).Infof("Creating Instance with name: %q", fi.StringValue(e.Name))
+		serverName, err := generateInstanceName(e)
+		if err != nil {
+			return err
+		}
+		klog.V(2).Infof("Creating Instance with name: %q", serverName)
+
+		imageName := fi.StringValue(e.Image)
+		image, err := cloud.GetImage(imageName)
+		if err != nil {
+			return fmt.Errorf("failed to find image %v: %v", imageName, err)
+		}
+
+		flavorName := fi.StringValue(e.Flavor)
+		flavor, err := cloud.GetFlavor(flavorName)
+		if err != nil {
+			return fmt.Errorf("failed to find flavor %v: %v", flavorName, err)
+		}
 
 		opt := servers.CreateOpts{
-			Name:       fi.StringValue(e.Name),
-			ImageName:  fi.StringValue(e.Image),
-			FlavorName: fi.StringValue(e.Flavor),
+			Name:      serverName,
+			ImageRef:  image.ID,
+			FlavorRef: flavor.ID,
 			Networks: []servers.Network{
 				{
 					Port: fi.StringValue(e.Port.ID),
 				},
 			},
 			Metadata:       e.Metadata,
-			ServiceClient:  t.Cloud.ComputeClient(),
 			SecurityGroups: e.SecurityGroups,
+			ConfigDrive:    e.ConfigDrive,
 		}
 		if e.UserData != nil {
-			opt.UserData = []byte(*e.UserData)
+			bytes, err := fi.ResourceAsBytes(e.UserData)
+			if err != nil {
+				return err
+			}
+			opt.UserData = bytes
 		}
 		if e.AvailabilityZone != nil {
 			opt.AvailabilityZone = fi.StringValue(e.AvailabilityZone)
@@ -191,19 +337,47 @@ func (_ *Instance) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, change
 			return err
 		}
 
-		v, err := t.Cloud.CreateInstance(opts)
+		v, err := t.Cloud.CreateInstance(opts, fi.StringValue(e.Port.ID))
 		if err != nil {
 			return fmt.Errorf("Error creating instance: %v", err)
 		}
 		e.ID = fi.String(v.ID)
-		e.ServerGroup.Members = append(e.ServerGroup.Members, fi.StringValue(e.ID))
+		e.ServerGroup.AddNewMember(fi.StringValue(e.ID))
+
+		if e.FloatingIP != nil {
+			err = associateFloatingIP(t, e)
+			if err != nil {
+				return err
+			}
+		}
 
 		klog.V(2).Infof("Creating a new Openstack instance, id=%s", v.ID)
 
 		return nil
 	}
+	if changes.Port != nil {
+		ports.Update(cloud.NetworkingClient(), fi.StringValue(changes.Port.ID), ports.UpdateOpts{
+			DeviceID: e.ID,
+		})
+	}
+	if changes.FloatingIP != nil {
+		err := associateFloatingIP(t, e)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	klog.V(2).Infof("Openstack task Instance::RenderOpenstack did nothing")
+func associateFloatingIP(t *openstack.OpenstackAPITarget, e *Instance) error {
+	client := t.Cloud.NetworkingClient()
+
+	_, err := l3floatingip.Update(client, fi.StringValue(e.FloatingIP.ID), l3floatingip.UpdateOpts{
+		PortID: e.Port.ID,
+	}).Extract()
+	if err != nil {
+		return fmt.Errorf("failed to associated floating IP to instance %s: %v", *e.Name, err)
+	}
 	return nil
 }
 

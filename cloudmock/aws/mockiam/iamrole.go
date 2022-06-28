@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockIAM) GetRole(request *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
@@ -32,7 +32,7 @@ func (m *MockIAM) GetRole(request *iam.GetRoleInput) (*iam.GetRoleOutput, error)
 
 	role := m.Roles[aws.StringValue(request.RoleName)]
 	if role == nil {
-		return nil, awserr.New("NoSuchEntity", "No such entity", nil)
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "No such entity", nil)
 	}
 	response := &iam.GetRoleOutput{
 		Role: role,
@@ -52,15 +52,17 @@ func (m *MockIAM) CreateRole(request *iam.CreateRoleInput) (*iam.CreateRoleOutpu
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	klog.Infof("CreateRole: %v", request)
-
 	roleID := m.createID()
 	r := &iam.Role{
 		AssumeRolePolicyDocument: request.AssumeRolePolicyDocument,
 		Description:              request.Description,
 		Path:                     request.Path,
-		RoleName:                 request.RoleName,
-		RoleId:                   &roleID,
+		PermissionsBoundary: &iam.AttachedPermissionsBoundary{
+			PermissionsBoundaryArn: request.PermissionsBoundary,
+		},
+		RoleName: request.RoleName,
+		RoleId:   &roleID,
+		Tags:     request.Tags,
 	}
 
 	if m.Roles == nil {
@@ -75,6 +77,7 @@ func (m *MockIAM) CreateRole(request *iam.CreateRoleInput) (*iam.CreateRoleOutpu
 func (m *MockIAM) CreateRoleWithContext(aws.Context, *iam.CreateRoleInput, ...request.Option) (*iam.CreateRoleOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockIAM) CreateRoleRequest(*iam.CreateRoleInput) (*request.Request, *iam.CreateRoleOutput) {
 	panic("Not implemented")
 }
@@ -106,6 +109,7 @@ func (m *MockIAM) ListRoles(request *iam.ListRolesInput) (*iam.ListRolesOutput, 
 func (m *MockIAM) ListRolesWithContext(aws.Context, *iam.ListRolesInput, ...request.Option) (*iam.ListRolesOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockIAM) ListRolesRequest(*iam.ListRolesInput) (*request.Request, *iam.ListRolesOutput) {
 	panic("Not implemented")
 }
@@ -141,9 +145,47 @@ func (m *MockIAM) DeleteRole(request *iam.DeleteRoleInput) (*iam.DeleteRoleOutpu
 
 	return &iam.DeleteRoleOutput{}, nil
 }
+
 func (m *MockIAM) DeleteRoleWithContext(aws.Context, *iam.DeleteRoleInput, ...request.Option) (*iam.DeleteRoleOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockIAM) DeleteRoleRequest(*iam.DeleteRoleInput) (*request.Request, *iam.DeleteRoleOutput) {
 	panic("Not implemented")
+}
+
+func (m *MockIAM) ListAttachedRolePolicies(input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	klog.Infof("ListAttachedRolePolicies: %s", aws.StringValue(input.RoleName))
+
+	for _, r := range m.Roles {
+		if r.RoleName == input.RoleName {
+			role := aws.StringValue(r.RoleName)
+
+			return &iam.ListAttachedRolePoliciesOutput{
+				AttachedPolicies: m.AttachedPolicies[role],
+			}, nil
+		}
+	}
+
+	return &iam.ListAttachedRolePoliciesOutput{}, nil
+}
+
+func (m *MockIAM) ListAttachedRolePoliciesPages(input *iam.ListAttachedRolePoliciesInput, pager func(*iam.ListAttachedRolePoliciesOutput, bool) bool) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	klog.Infof("ListAttachedRolePolicies: %s", aws.StringValue(input.RoleName))
+
+	role := aws.StringValue(input.RoleName)
+
+	if pager(&iam.ListAttachedRolePoliciesOutput{
+		AttachedPolicies: m.AttachedPolicies[role],
+	}, true) {
+		return nil
+	}
+
+	return nil
 }

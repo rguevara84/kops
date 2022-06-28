@@ -21,17 +21,18 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=RouteTableAssociation
+// +kops:fitask
 type RouteTableAssociation struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID         *string
 	RouteTable *RouteTable
@@ -187,8 +188,8 @@ func (_ *RouteTableAssociation) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *
 }
 
 type terraformRouteTableAssociation struct {
-	SubnetID     *terraform.Literal `json:"subnet_id"`
-	RouteTableID *terraform.Literal `json:"route_table_id"`
+	SubnetID     *terraformWriter.Literal `cty:"subnet_id"`
+	RouteTableID *terraformWriter.Literal `cty:"route_table_id"`
 }
 
 func (_ *RouteTableAssociation) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *RouteTableAssociation) error {
@@ -200,8 +201,8 @@ func (_ *RouteTableAssociation) RenderTerraform(t *terraform.TerraformTarget, a,
 	return t.RenderResource("aws_route_table_association", *e.Name, tf)
 }
 
-func (e *RouteTableAssociation) TerraformLink() *terraform.Literal {
-	return terraform.LiteralSelfLink("aws_route_table_association", *e.Name)
+func (e *RouteTableAssociation) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralSelfLink("aws_route_table_association", *e.Name)
 }
 
 type cloudformationRouteTableAssociation struct {

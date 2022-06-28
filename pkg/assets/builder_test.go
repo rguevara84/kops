@@ -17,17 +17,19 @@ limitations under the License.
 package assets
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/util"
+	"k8s.io/kops/pkg/testutils/golden"
 )
 
 func buildAssetBuilder(t *testing.T) *AssetBuilder {
-
 	builder := &AssetBuilder{
-		AssetsLocation:  &kops.Assets{},
-		ContainerAssets: []*ContainerAsset{},
+		AssetsLocation: &kops.Assets{},
+		ImageAssets:    []*ImageAsset{},
 	}
 	return builder
 }
@@ -74,7 +76,7 @@ func TestValidate_RemapImage_ContainerProxy_AppliesToSimplifiedKubernetesURL(t *
 	builder := buildAssetBuilder(t)
 
 	proxyURL := "proxy.example.com/"
-	image := "k8s.gcr.io/kube-apiserver"
+	image := "registry.k8s.io/kube-apiserver"
 	expected := "proxy.example.com/kube-apiserver"
 	version, _ := util.ParseKubernetesVersion("1.10")
 
@@ -114,7 +116,7 @@ func TestValidate_RemapImage_ContainerProxy_AppliesToImagesWithTags(t *testing.T
 	builder := buildAssetBuilder(t)
 
 	proxyURL := "proxy.example.com/"
-	image := "k8s.gcr.io/kube-apiserver:1.2.3"
+	image := "registry.k8s.io/kube-apiserver:1.2.3"
 	expected := "proxy.example.com/kube-apiserver:1.2.3"
 	version, _ := util.ParseKubernetesVersion("1.10")
 
@@ -134,13 +136,13 @@ func TestValidate_RemapImage_ContainerProxy_AppliesToImagesWithTags(t *testing.T
 func TestValidate_RemapImage_ContainerRegistry_MappingMultipleTimesConverges(t *testing.T) {
 	builder := buildAssetBuilder(t)
 
-	mirrorUrl := "proxy.example.com"
+	mirrorURL := "proxy.example.com"
 	image := "kube-apiserver:1.2.3"
 	expected := "proxy.example.com/kube-apiserver:1.2.3"
 	version, _ := util.ParseKubernetesVersion("1.10")
 
 	builder.KubernetesVersion = *version
-	builder.AssetsLocation.ContainerRegistry = &mirrorUrl
+	builder.AssetsLocation.ContainerRegistry = &mirrorURL
 
 	remapped := image
 	iterations := make([]map[int]int, 2)
@@ -154,5 +156,27 @@ func TestValidate_RemapImage_ContainerRegistry_MappingMultipleTimesConverges(t *
 			t.Errorf("Error remapping image (Expecting: %s, got %s, iteration: %d)", expected, remapped, i)
 		}
 	}
+}
 
+func TestRemapEmptySection(t *testing.T) {
+	builder := buildAssetBuilder(t)
+
+	testdir := filepath.Join("testdata")
+
+	key := "emptysection"
+
+	inputPath := filepath.Join(testdir, key+".input.yaml")
+	expectedPath := filepath.Join(testdir, key+".expected.yaml")
+
+	input, err := os.ReadFile(inputPath)
+	if err != nil {
+		t.Errorf("error reading file %q: %v", inputPath, err)
+	}
+
+	actual, err := builder.RemapManifest(input)
+	if err != nil {
+		t.Errorf("error remapping manifest %q: %v", inputPath, err)
+	}
+
+	golden.AssertMatchesFile(t, string(actual), expectedPath)
 }

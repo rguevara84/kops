@@ -36,5 +36,21 @@ func (b *DefaultsOptionsBuilder) BuildOptions(o interface{}) error {
 		options.ClusterDNSDomain = "cluster.local"
 	}
 
+	if options.ContainerRuntime == "" {
+		if b.Context.IsKubernetesLT("1.20") || options.Docker != nil {
+			options.ContainerRuntime = "docker"
+		} else {
+			options.ContainerRuntime = "containerd"
+		}
+	}
+
+	if options.ExternalDNS == nil {
+		options.ExternalDNS = &kops.ExternalDNSConfig{}
+	}
+
+	if options.ExternalDNS.Provider == "" {
+		options.ExternalDNS.Provider = kops.ExternalDNSProviderDNSController
+	}
+
 	return nil
 }

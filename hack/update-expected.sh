@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # Copyright 2019 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,15 +18,19 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-KOPS_ROOT=$(git rev-parse --show-toplevel)
-cd ${KOPS_ROOT}
+. "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# Update gobindata to reflect any yaml changes
-make kops-gobindata
+cd "${KOPS_ROOT}"
+
+# Accept an optional argument overriding the package to update
+PKG="${1:-./...}"
 
 # Don't override variables that are commonly used in dev, but shouldn't be in our tests
-export KOPS_BASE_URL=
-export DNSCONTROLLER_IMAGE=
+unset KOPS_BASE_URL DNSCONTROLLER_IMAGE KOPSCONTROLLER_IMAGE KUBE_APISERVER_HEALTHCHECK_IMAGE KOPS_FEATURE_FLAGS KOPS_ARCH
+unset AWS_ACCESS_KEY_ID AWS_REGION AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN CNI_VERSION_URL DNS_IGNORE_NS_CHECK DO_ACCESS_TOKEN GOOGLE_APPLICATION_CREDENTIALS HCLOUD_TOKEN
+unset KOPS_CLUSTER_NAME KOPS_RUN_OBSOLETE_VERSION KOPS_STATE_STORE KOPS_STATE_S3_ACL KUBE_API_VERSIONS NODEUP_URL OPENSTACK_CREDENTIAL_FILE PROTOKUBE_IMAGE SKIP_PACKAGE_UPDATE
+unset SKIP_REGION_CHECK S3_ACCESS_KEY_ID S3_ENDPOINT S3_REGION S3_SECRET_ACCESS_KEY
+
 
 # Run the tests in "autofix mode"
-HACK_UPDATE_EXPECTED_IN_PLACE=1 go test ./... -count=1
+HACK_UPDATE_EXPECTED_IN_PLACE=1 go test "${PKG}" -count=1

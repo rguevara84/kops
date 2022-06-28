@@ -1,0 +1,10 @@
+./addons/cluster-autoscaler/cluster-autoscaler.sh
+./addons/prometheus-operator/sync-repo.sh
+./hack/dev-build.sh
+./hooks/nvidia-bootstrap/image/run.sh
+./hooks/nvidia-device-plugin/image/files/01-aws-nvidia-driver.sh
+./hooks/nvidia-device-plugin/image/files/02-nvidia-docker.sh
+./hooks/nvidia-device-plugin/image/files/nvidia-device-plugin.sh
+./hooks/nvidia-device-plugin/image/run.sh
+./hooks/prepull-images/image/run.sh
+./tools/get_workspace_status.sh

@@ -24,11 +24,12 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi/utils"
 	"k8s.io/kops/util/pkg/hashing"
 )
@@ -47,7 +48,7 @@ type Source struct {
 	ExtractFromArchive string
 }
 
-// Builds a unique key for this source
+// Key builds a unique key for this source
 func (s *Source) Key() string {
 	var k string
 	if s.Parent != nil {
@@ -73,18 +74,20 @@ type HasSource interface {
 
 // assetResource implements Resource, but also implements HasFetchInstructions
 type assetResource struct {
-	asset *asset
+	Asset *asset
 }
 
-var _ Resource = &assetResource{}
-var _ HasSource = &assetResource{}
+var (
+	_ Resource  = &assetResource{}
+	_ HasSource = &assetResource{}
+)
 
 func (r *assetResource) Open() (io.Reader, error) {
-	return r.asset.resource.Open()
+	return r.Asset.resource.Open()
 }
 
 func (r *assetResource) GetSource() *Source {
-	return r.asset.source
+	return r.Asset.source
 }
 
 type AssetStore struct {
@@ -98,6 +101,41 @@ func NewAssetStore(cacheDir string) *AssetStore {
 	}
 	return a
 }
+
+func (a *AssetStore) FindMatches(expr *regexp.Regexp) map[string]Resource {
+	matches := make(map[string]Resource)
+
+	klog.Infof("Matching assets for %q:", expr.String())
+	for _, a := range a.assets {
+		if expr.MatchString(a.AssetPath) {
+			klog.Infof("    %s", a.AssetPath)
+			matches[a.Key] = &assetResource{Asset: a}
+		}
+	}
+
+	return matches
+}
+
+func (a *AssetStore) FindMatch(expr *regexp.Regexp) (name string, res Resource, err error) {
+	matches := a.FindMatches(expr)
+
+	switch len(matches) {
+	case 0:
+		return "", nil, fmt.Errorf("found no matching assets for expr: %q", expr.String())
+	case 1:
+		var n string
+		var r Resource
+		for k, v := range matches {
+			klog.Infof("Found single matching asset for expr %q: %q", expr.String(), k)
+			n = k
+			r = v
+		}
+		return n, r, nil
+	default:
+		return "", nil, fmt.Errorf("found multiple matching assets for expr: %q", expr.String())
+	}
+}
+
 func (a *AssetStore) Find(key string, assetPath string) (Resource, error) {
 	var matches []*asset
 	for _, asset := range a.assets {
@@ -119,7 +157,7 @@ func (a *AssetStore) Find(key string, assetPath string) (Resource, error) {
 	}
 	if len(matches) == 1 {
 		klog.Infof("Resolved asset %s:%s to %s", key, assetPath, matches[0].AssetPath)
-		return &assetResource{asset: matches[0]}, nil
+		return &assetResource{Asset: matches[0]}, nil
 	}
 
 	klog.Infof("Matching assets:")
@@ -129,7 +167,16 @@ func (a *AssetStore) Find(key string, assetPath string) (Resource, error) {
 	return nil, fmt.Errorf("found multiple matching assets for key: %q", key)
 }
 
-func hashFromHttpHeader(url string) (*hashing.Hash, error) {
+// Add an asset into the store, in one of the recognized formats (see Assets in types package)
+func (a *AssetStore) AddForTest(id string, path string, content string) {
+	a.assets = append(a.assets, &asset{
+		Key:       id,
+		AssetPath: path,
+		resource:  NewStringResource(content),
+	})
+}
+
+func hashFromHTTPHeader(url string) (*hashing.Hash, error) {
 	klog.Infof("Doing HTTP HEAD on %q", url)
 	response, err := http.Head(url)
 	if err != nil {
@@ -180,7 +227,7 @@ func (a *AssetStore) addURLs(urls []string, hash *hashing.Hash) error {
 	var err error
 	if hash == nil {
 		for _, url := range urls {
-			hash, err = hashFromHttpHeader(url)
+			hash, err = hashFromHTTPHeader(url)
 			if err != nil {
 				klog.Warningf("unable to get hash from %q: %v", url, err)
 				continue
@@ -193,9 +240,10 @@ func (a *AssetStore) addURLs(urls []string, hash *hashing.Hash) error {
 		}
 	}
 
-	// We assume the first url is the "main" url, and download to that _name_, wherever we get it from
+	// We assume the first url is the "main" url, and download to the base of that _name_, wherever we get it from
 	primaryURL := urls[0]
-	localFile := path.Join(a.cacheDir, hash.String()+"_"+utils.SanitizeString(primaryURL))
+	key := path.Base(primaryURL)
+	localFile := path.Join(a.cacheDir, hash.String()+"_"+utils.SanitizeString(key))
 
 	for _, url := range urls {
 		_, err = DownloadURL(url, localFile, hash)
@@ -210,7 +258,6 @@ func (a *AssetStore) addURLs(urls []string, hash *hashing.Hash) error {
 		return err
 	}
 
-	key := path.Base(primaryURL)
 	assetPath := primaryURL
 	r := NewFileResource(localFile)
 
@@ -238,48 +285,6 @@ func (a *AssetStore) addURLs(urls []string, hash *hashing.Hash) error {
 	return nil
 }
 
-//func (a *AssetStore) addFile(assetPath string, p string) error {
-//	r := NewFileResource(p)
-//	return a.addResource(assetPath, r)
-//}
-
-//func (a *AssetStore) addResource(assetPath string, r Resource) error {
-//	hash, err := HashForResource(r, HashAlgorithmSHA256)
-//	if err != nil {
-//		return err
-//	}
-//
-//	localFile := path.Join(a.assetDir, hash + "_" + utils.SanitizeString(assetPath))
-//	hasHash, err := fileHasHash(localFile, hash)
-//	if err != nil {
-//		return err
-//	}
-//
-//	if !hasHash {
-//		err = WriteFile(localFile, r, 0644, 0755)
-//		if err != nil {
-//			return err
-//		}
-//	}
-//
-//	asset := &asset{
-//		Key:       localFile,
-//		AssetPath: assetPath,
-//		resource:  r,
-//	}
-//	klog.V(2).Infof("added asset %q for %q", asset.Key, asset.resource)
-//	a.assets = append(a.assets, asset)
-//
-//	if strings.HasSuffix(assetPath, ".tar.gz") {
-//		err = a.addArchive(localFile)
-//		if err != nil {
-//			return err
-//		}
-//	}
-//
-//	return nil
-//}
-
 func (a *AssetStore) addArchive(archiveSource *Source, archiveFile string) error {
 	extracted := path.Join(a.cacheDir, "extracted/"+path.Base(archiveFile))
 
@@ -287,7 +292,7 @@ func (a *AssetStore) addArchive(archiveSource *Source, archiveFile string) error
 		// We extract to a temporary dir which we then rename so this is atomic
 		// (untarring can be slow, and we might crash / be interrupted half-way through)
 		extractedTemp := extracted + ".tmp-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-		err := os.MkdirAll(extractedTemp, 0755)
+		err := os.MkdirAll(extractedTemp, 0o755)
 		if err != nil {
 			return fmt.Errorf("error creating directories %q: %v", path.Dir(extractedTemp), err)
 		}
@@ -343,5 +348,4 @@ func (a *AssetStore) addArchive(archiveSource *Source, archiveFile string) error
 		return fmt.Errorf("error adding expanded asset files in %q: %v", extracted, err)
 	}
 	return nil
-
 }

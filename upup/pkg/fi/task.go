@@ -21,11 +21,17 @@ import (
 	"reflect"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type Task interface {
 	Run(*Context) error
+}
+
+// TaskPreRun is implemented by tasks that perform some initial validation.
+type TaskPreRun interface {
+	// PreRun will be run for all TaskPreRuns, before any Run functions are invoked.
+	PreRun(*Context) error
 }
 
 // TaskAsString renders the task for debug output
@@ -42,6 +48,14 @@ type HasCheckExisting interface {
 // ModelBuilder allows for plugins that configure an aspect of the model, based on the configuration
 type ModelBuilder interface {
 	Build(context *ModelBuilderContext) error
+}
+
+// HasDeletions is a ModelBuilder that creates tasks to delete cloud objects that no longer exist in the model.
+type HasDeletions interface {
+	ModelBuilder
+	// FindDeletions finds cloud objects that are owned by the cluster but no longer in the model and creates tasks to delete them.
+	// It is not called for the Terraform or Cloudformation targets.
+	FindDeletions(context *ModelBuilderContext, cloud Cloud) error
 }
 
 // ModelBuilderContext is a context object that holds state we want to pass to ModelBuilder
@@ -74,13 +88,12 @@ func (c *ModelBuilderContext) EnsureTask(task Task) error {
 		if reflect.DeepEqual(task, existing) {
 			klog.V(8).Infof("EnsureTask ignoring identical ")
 			return nil
-		} else {
-			klog.Warningf("EnsureTask found task mismatch for %q", key)
-			klog.Warningf("\tExisting: %v", existing)
-			klog.Warningf("\tNew: %v", task)
-
-			return fmt.Errorf("cannot add different task with same key %q", key)
 		}
+		klog.Warningf("EnsureTask found task mismatch for %q", key)
+		klog.Warningf("\tExisting: %v", existing)
+		klog.Warningf("\tNew: %v", task)
+
+		return fmt.Errorf("cannot add different task with same key %q", key)
 	}
 	c.Tasks[key] = task
 	return nil
@@ -93,19 +106,18 @@ func (c *ModelBuilderContext) setLifecycleOverride(task Task) Task {
 	// TODO(@chrislovecnm) - wonder if we should update the nodeup tasks to have lifecycle
 	// TODO - so that we can return an error here, rather than just returning.
 	// certain tasks have not implemented HasLifecycle interface
-	hl, ok := task.(HasLifecycle)
-	if !ok {
-		klog.V(8).Infof("task %T does not implement HasLifecycle", task)
-		return task
-	}
-
 	typeName := TypeNameForTask(task)
-	klog.V(8).Infof("testing task %q", typeName)
 
 	// typeName can be values like "InternetGateway"
 	value, ok := c.LifecycleOverrides[typeName]
 	if ok {
-		klog.Warningf("overriding task %s, lifecycle %s", task, value)
+		hl, okHL := task.(HasLifecycle)
+		if !okHL {
+			klog.Warningf("task %T does not implement HasLifecycle", task)
+			return task
+		}
+
+		klog.Infof("overriding task %s, lifecycle %s", task, value)
 		hl.SetLifecycle(value)
 	}
 

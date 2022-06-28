@@ -17,6 +17,7 @@ limitations under the License.
 package designate
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/gophercloud/gophercloud/openstack/dns/v2/recordsets"
@@ -50,7 +51,12 @@ func (c *ResourceRecordChangeset) Upsert(rrset dnsprovider.ResourceRecordSet) dn
 	return c
 }
 
-func (c *ResourceRecordChangeset) Apply() error {
+func (c *ResourceRecordChangeset) Apply(ctx context.Context) error {
+	// Empty changesets should be a relatively quick no-op
+	if c.IsEmpty() {
+		return nil
+	}
+
 	zoneID := c.zone.impl.ID
 
 	for _, removal := range c.removals {
@@ -82,8 +88,9 @@ func (c *ResourceRecordChangeset) Apply() error {
 		if err != nil {
 			return err
 		}
+		ttl := int(upsert.Ttl())
 		uopts := recordsets.UpdateOpts{
-			TTL:     int(upsert.Ttl()),
+			TTL:     &ttl,
 			Records: upsert.Rrdatas(),
 		}
 		_, err = recordsets.Update(c.zone.zones.iface.sc, zoneID, rrID, uopts).Extract()

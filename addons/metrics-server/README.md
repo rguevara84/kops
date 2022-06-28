@@ -1,5 +1,7 @@
 # Kubernetes Metrics Server
 
+**This addon is deprecated. Set `spec.metricsServer.enabled: true` instead**
+
 ## User guide
 
 You can find the user guide in
@@ -15,6 +17,26 @@ The detailed design of the project can be found in the following docs:
 For the broader view of monitoring in Kubernetes take a look into
 [Monitoring architecture](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/instrumentation/monitoring_architecture.md)
 
+## Prerequisites
+you must allow service account tokens to communicate with kubelet, edit your cluster configuration
+```console
+$ kops edit cluster
+```
+
+add configuration below to your cluster configuration.
+```
+kubelet:
+    anonymousAuth: false
+    authorizationMode: Webhook
+    authenticationTokenWebhook: true
+```
+
+update your cluster
+```console
+$ kops update cluster --yes
+$ kops rolling-update cluster --yes
+```
+
 ## Deployment
 
 Compatibility matrix:
@@ -22,19 +44,17 @@ Compatibility matrix:
 Metrics Server | Metrics API group/version | Supported Kubernetes version
 ---------------|---------------------------|-----------------------------
 0.3.x          | `metrics.k8s.io/v1beta1`  | 1.8+
-0.2.x          | `metrics.k8s.io/v1beta1`  | 1.8+
-0.1.x          | `metrics/v1alpha1`        | 1.7
-
 
 In order to deploy metrics-server in your cluster run the following command from
 the top-level directory of this repository:
 
 ```console
-# Kubernetes 1.7
-$ kubectl apply -f https://raw.githubusercontent.com/kubernetes/kops/master/addons/metrics-server/v1.7.x.yaml
-
-# Kubernetes 1.8+
+# Kubernetes 1.8+ <= 1.15
 $ kubectl apply -f https://raw.githubusercontent.com/kubernetes/kops/master/addons/metrics-server/v1.8.x.yaml
+
+# Kubernetes 1.16+
+$ kubectl apply -f https://raw.githubusercontent.com/kubernetes/kops/master/addons/metrics-server/v1.16.x.yaml
+
 ```
 
 ## Flags

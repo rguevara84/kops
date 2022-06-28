@@ -19,13 +19,13 @@ package openstacktasks
 import (
 	"fmt"
 
-	cinderv2 "github.com/gophercloud/gophercloud/openstack/blockstorage/v2/volumes"
-	"k8s.io/klog"
+	cinderv3 "github.com/gophercloud/gophercloud/openstack/blockstorage/v3/volumes"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=Volume
+// +kops:fitask
 type Volume struct {
 	ID               *string
 	Name             *string
@@ -33,7 +33,7 @@ type Volume struct {
 	VolumeType       *string
 	SizeGB           *int64
 	Tags             map[string]string
-	Lifecycle        *fi.Lifecycle
+	Lifecycle        fi.Lifecycle
 }
 
 var _ fi.CompareWithID = &Volume{}
@@ -44,7 +44,7 @@ func (c *Volume) CompareWithID() *string {
 
 func (c *Volume) Find(context *fi.Context) (*Volume, error) {
 	cloud := context.Cloud.(openstack.OpenstackCloud)
-	opt := cinderv2.ListOpts{
+	opt := cinderv3.ListOpts{
 		Name:     fi.StringValue(c.Name),
 		Metadata: c.Tags,
 	}
@@ -70,12 +70,8 @@ func (c *Volume) Find(context *fi.Context) (*Volume, error) {
 	}
 	// remove tags "readonly" and "attached_mode", openstack are adding these and if not removed
 	// kops will always try to update volumes
-	if _, ok := actual.Tags["readonly"]; ok {
-		delete(actual.Tags, "readonly")
-	}
-	if _, ok := actual.Tags["attached_mode"]; ok {
-		delete(actual.Tags, "attached_mode")
-	}
+	delete(actual.Tags, "readonly")
+	delete(actual.Tags, "attached_mode")
 	c.ID = actual.ID
 	c.AvailabilityZone = actual.AvailabilityZone
 	return actual, nil
@@ -130,7 +126,7 @@ func (_ *Volume) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes 
 			return fmt.Errorf("Failed to get storage availability zone: %s", err)
 		}
 
-		opt := cinderv2.CreateOpts{
+		opt := cinderv3.CreateOpts{
 			Size:             int(*e.SizeGB),
 			AvailabilityZone: storageAZ.ZoneName,
 			Metadata:         e.Tags,

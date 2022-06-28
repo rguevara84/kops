@@ -1,6 +1,7 @@
 package schedulerhints
 
 import (
+	"encoding/json"
 	"net"
 	"regexp"
 	"strings"
@@ -29,6 +30,9 @@ type SchedulerHints struct {
 
 	// TargetCell specifies a cell name where the instance will be placed.
 	TargetCell string `json:"target_cell,omitempty"`
+
+	// DifferentCell specifies cells names where an instance should not be placed.
+	DifferentCell []string `json:"different_cell,omitempty"`
 
 	// BuildNearHostIP specifies a subnet of compute nodes to host the instance.
 	BuildNearHostIP string
@@ -105,11 +109,26 @@ func (opts SchedulerHints) ToServerSchedulerHintsCreateMap() (map[string]interfa
 			err.Info = "Must be a conditional statement in the format of [op,variable,value]"
 			return nil, err
 		}
-		sh["query"] = opts.Query
+
+		// The query needs to be sent as a marshalled string.
+		b, err := json.Marshal(opts.Query)
+		if err != nil {
+			err := gophercloud.ErrInvalidInput{}
+			err.Argument = "schedulerhints.SchedulerHints.Query"
+			err.Value = opts.Query
+			err.Info = "Must be a conditional statement in the format of [op,variable,value]"
+			return nil, err
+		}
+
+		sh["query"] = string(b)
 	}
 
 	if opts.TargetCell != "" {
 		sh["target_cell"] = opts.TargetCell
+	}
+
+	if len(opts.DifferentCell) > 0 {
+		sh["different_cell"] = opts.DifferentCell
 	}
 
 	if opts.BuildNearHostIP != "" {

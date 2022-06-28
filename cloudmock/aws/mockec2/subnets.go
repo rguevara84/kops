@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 type subnetInfo struct {
@@ -72,6 +72,23 @@ func (m *MockEC2) CreateSubnetWithId(request *ec2.CreateSubnetInput, id string) 
 		VpcId:            request.VpcId,
 		CidrBlock:        request.CidrBlock,
 		AvailabilityZone: request.AvailabilityZone,
+		PrivateDnsNameOptionsOnLaunch: &ec2.PrivateDnsNameOptionsOnLaunch{
+			EnableResourceNameDnsAAAARecord: aws.Bool(false),
+			EnableResourceNameDnsARecord:    aws.Bool(false),
+			HostnameType:                    aws.String(ec2.HostnameTypeIpName),
+		},
+	}
+
+	if request.Ipv6CidrBlock != nil {
+		subnet.Ipv6CidrBlockAssociationSet = []*ec2.SubnetIpv6CidrBlockAssociation{
+			{
+				AssociationId: aws.String("subnet-cidr-assoc-ipv6-" + id),
+				Ipv6CidrBlock: request.Ipv6CidrBlock,
+				Ipv6CidrBlockState: &ec2.SubnetCidrBlockState{
+					State: aws.String(ec2.SubnetCidrBlockStateCodeAssociated),
+				},
+			},
+		}
 	}
 
 	if m.subnets == nil {
@@ -80,6 +97,8 @@ func (m *MockEC2) CreateSubnetWithId(request *ec2.CreateSubnetInput, id string) 
 	m.subnets[*subnet.SubnetId] = &subnetInfo{
 		main: *subnet,
 	}
+
+	m.addTags(id, tagSpecificationsToTags(request.TagSpecifications, ec2.ResourceTypeSubnet)...)
 
 	response := &ec2.CreateSubnetOutput{
 		Subnet: subnet,
@@ -203,9 +222,11 @@ func (m *MockEC2) AssociateRouteTable(request *ec2.AssociateRouteTableInput) (*e
 	}
 	return response, nil
 }
+
 func (m *MockEC2) AssociateRouteTableWithContext(aws.Context, *ec2.AssociateRouteTableInput, ...request.Option) (*ec2.AssociateRouteTableOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) AssociateRouteTableRequest(*ec2.AssociateRouteTableInput) (*request.Request, *ec2.AssociateRouteTableOutput) {
 	panic("Not implemented")
 }
@@ -229,6 +250,21 @@ func (m *MockEC2) DeleteSubnet(request *ec2.DeleteSubnetInput) (*ec2.DeleteSubne
 func (m *MockEC2) DeleteSubnetWithContext(aws.Context, *ec2.DeleteSubnetInput, ...request.Option) (*ec2.DeleteSubnetOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DeleteSubnetRequest(*ec2.DeleteSubnetInput) (*request.Request, *ec2.DeleteSubnetOutput) {
 	panic("Not implemented")
+}
+
+func (m *MockEC2) ModifySubnetAttribute(request *ec2.ModifySubnetAttributeInput) (*ec2.ModifySubnetAttributeOutput, error) {
+	subnet := m.subnets[*request.SubnetId]
+	if request.EnableResourceNameDnsAAAARecordOnLaunch != nil {
+		subnet.main.PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsAAAARecord = request.EnableResourceNameDnsAAAARecordOnLaunch.Value
+	}
+	if request.EnableResourceNameDnsARecordOnLaunch != nil {
+		subnet.main.PrivateDnsNameOptionsOnLaunch.EnableResourceNameDnsARecord = request.EnableResourceNameDnsARecordOnLaunch.Value
+	}
+	if request.PrivateDnsHostnameTypeOnLaunch != nil {
+		subnet.main.PrivateDnsNameOptionsOnLaunch.HostnameType = request.PrivateDnsHostnameTypeOnLaunch
+	}
+	return &ec2.ModifySubnetAttributeOutput{}, nil
 }

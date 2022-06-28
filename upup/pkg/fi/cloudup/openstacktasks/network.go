@@ -20,17 +20,18 @@ import (
 	"fmt"
 
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/networks"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=Network
+// +kops:fitask
 type Network struct {
-	ID        *string
-	Name      *string
-	Lifecycle *fi.Lifecycle
-	Tag       *string
+	ID                    *string
+	Name                  *string
+	Lifecycle             fi.Lifecycle
+	Tag                   *string
+	AvailabilityZoneHints []*string
 }
 
 var _ fi.CompareWithID = &Network{}
@@ -39,17 +40,18 @@ func (n *Network) CompareWithID() *string {
 	return n.ID
 }
 
-func NewNetworkTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecycle, network *networks.Network, networkName *string) (*Network, error) {
+func NewNetworkTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle fi.Lifecycle, network *networks.Network, networkName *string) (*Network, error) {
 	tag := ""
 	if networkName != nil && fi.ArrayContains(network.Tags, fi.StringValue(networkName)) {
 		tag = fi.StringValue(networkName)
 	}
 
 	task := &Network{
-		ID:        fi.String(network.ID),
-		Name:      fi.String(network.Name),
-		Lifecycle: lifecycle,
-		Tag:       fi.String(tag),
+		ID:                    fi.String(network.ID),
+		Name:                  fi.String(network.Name),
+		Lifecycle:             lifecycle,
+		Tag:                   fi.String(tag),
+		AvailabilityZoneHints: fi.StringSlice(network.AvailabilityZoneHints),
 	}
 	return task, nil
 }
@@ -98,6 +100,9 @@ func (_ *Network) CheckChanges(a, e, changes *Network) error {
 		if changes.Name != nil {
 			return fi.CannotChangeField("Name")
 		}
+		if changes.AvailabilityZoneHints != nil {
+			return fi.CannotChangeField("AvailabilityZoneHints")
+		}
 	}
 	return nil
 }
@@ -114,8 +119,9 @@ func (_ *Network) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes
 		klog.V(2).Infof("Creating Network with name:%q", fi.StringValue(e.Name))
 
 		opt := networks.CreateOpts{
-			Name:         fi.StringValue(e.Name),
-			AdminStateUp: fi.Bool(true),
+			Name:                  fi.StringValue(e.Name),
+			AdminStateUp:          fi.Bool(true),
+			AvailabilityZoneHints: fi.StringSliceValue(e.AvailabilityZoneHints),
 		}
 
 		v, err := t.Cloud.CreateNetwork(opt)

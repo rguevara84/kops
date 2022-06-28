@@ -23,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) DescribeDhcpOptions(request *ec2.DescribeDhcpOptionsInput) (*ec2.DescribeDhcpOptionsOutput, error) {
@@ -79,6 +79,7 @@ func (m *MockEC2) DescribeDhcpOptions(request *ec2.DescribeDhcpOptionsInput) (*e
 func (m *MockEC2) DescribeDhcpOptionsWithContext(aws.Context, *ec2.DescribeDhcpOptionsInput, ...request.Option) (*ec2.DescribeDhcpOptionsOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeDhcpOptionsRequest(*ec2.DescribeDhcpOptionsInput) (*request.Request, *ec2.DescribeDhcpOptionsOutput) {
 	panic("Not implemented")
 }
@@ -108,9 +109,11 @@ func (m *MockEC2) AssociateDhcpOptions(request *ec2.AssociateDhcpOptionsInput) (
 
 	return response, nil
 }
+
 func (m *MockEC2) AssociateDhcpOptionsWithContext(aws.Context, *ec2.AssociateDhcpOptionsInput, ...request.Option) (*ec2.AssociateDhcpOptionsOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) AssociateDhcpOptionsRequest(*ec2.AssociateDhcpOptionsInput) (*request.Request, *ec2.AssociateDhcpOptionsOutput) {
 	panic("Not implemented")
 }
@@ -126,9 +129,10 @@ func (m *MockEC2) CreateDhcpOptions(request *ec2.CreateDhcpOptionsInput) (*ec2.C
 	}
 
 	n := len(m.DhcpOptions) + 1
+	id := fmt.Sprintf("dopt-%d", n)
 
 	dhcpOptions := &ec2.DhcpOptions{
-		DhcpOptionsId: s(fmt.Sprintf("dopt-%d", n)),
+		DhcpOptionsId: s(id),
 	}
 
 	for _, o := range request.DhcpConfigurations {
@@ -147,13 +151,17 @@ func (m *MockEC2) CreateDhcpOptions(request *ec2.CreateDhcpOptionsInput) (*ec2.C
 	}
 	m.DhcpOptions[*dhcpOptions.DhcpOptionsId] = dhcpOptions
 
+	m.addTags(id, tagSpecificationsToTags(request.TagSpecifications, ec2.ResourceTypeDhcpOptions)...)
+
 	copy := *dhcpOptions
 	copy.Tags = m.getTags(ec2.ResourceTypeDhcpOptions, *dhcpOptions.DhcpOptionsId)
 	return &ec2.CreateDhcpOptionsOutput{DhcpOptions: &copy}, nil
 }
+
 func (m *MockEC2) CreateDhcpOptionsWithContext(aws.Context, *ec2.CreateDhcpOptionsInput, ...request.Option) (*ec2.CreateDhcpOptionsOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) CreateDhcpOptionsRequest(*ec2.CreateDhcpOptionsInput) (*request.Request, *ec2.CreateDhcpOptionsOutput) {
 	panic("Not implemented")
 }
@@ -177,6 +185,7 @@ func (m *MockEC2) DeleteDhcpOptions(request *ec2.DeleteDhcpOptionsInput) (*ec2.D
 func (m *MockEC2) DeleteDhcpOptionsWithContext(aws.Context, *ec2.DeleteDhcpOptionsInput, ...request.Option) (*ec2.DeleteDhcpOptionsOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DeleteDhcpOptionsRequest(*ec2.DeleteDhcpOptionsInput) (*request.Request, *ec2.DeleteDhcpOptionsOutput) {
 	panic("Not implemented")
 }

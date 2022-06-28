@@ -20,17 +20,18 @@ import (
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=InternetGateway
+// +kops:fitask
 type InternetGateway struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID  *string
 	VPC *VPC
@@ -149,7 +150,9 @@ func (_ *InternetGateway) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Intern
 	if a == nil {
 		klog.V(2).Infof("Creating InternetGateway")
 
-		request := &ec2.CreateInternetGatewayInput{}
+		request := &ec2.CreateInternetGatewayInput{
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeInternetGateway, e.Tags),
+		}
 
 		response, err := t.Cloud.EC2().CreateInternetGateway(request)
 		if err != nil {
@@ -177,8 +180,8 @@ func (_ *InternetGateway) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Intern
 }
 
 type terraformInternetGateway struct {
-	VPCID *terraform.Literal `json:"vpc_id"`
-	Tags  map[string]string  `json:"tags,omitempty"`
+	VPCID *terraformWriter.Literal `cty:"vpc_id"`
+	Tags  map[string]string        `cty:"tags"`
 }
 
 func (_ *InternetGateway) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *InternetGateway) error {
@@ -216,7 +219,7 @@ func (_ *InternetGateway) RenderTerraform(t *terraform.TerraformTarget, a, e, ch
 	return t.RenderResource("aws_internet_gateway", *e.Name, tf)
 }
 
-func (e *InternetGateway) TerraformLink() *terraform.Literal {
+func (e *InternetGateway) TerraformLink() *terraformWriter.Literal {
 	shared := fi.BoolValue(e.Shared)
 	if shared {
 		if e.ID == nil {
@@ -224,10 +227,10 @@ func (e *InternetGateway) TerraformLink() *terraform.Literal {
 		}
 
 		klog.V(4).Infof("reusing existing InternetGateway with id %q", *e.ID)
-		return terraform.LiteralFromStringValue(*e.ID)
+		return terraformWriter.LiteralFromStringValue(*e.ID)
 	}
 
-	return terraform.LiteralProperty("aws_internet_gateway", *e.Name, "id")
+	return terraformWriter.LiteralProperty("aws_internet_gateway", *e.Name, "id")
 }
 
 type cloudformationInternetGateway struct {

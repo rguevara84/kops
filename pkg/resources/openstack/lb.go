@@ -23,7 +23,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/loadbalancers"
 	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/monitors"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/subnets"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/resources"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
@@ -83,7 +83,7 @@ func (os *clusterDiscoveryOS) DeleteSubnetLBs(subnet subnets.Subnet) ([]*resourc
 			continue
 		}
 
-		//Identify pools associated to this LB
+		// Identify pools associated to this LB
 		for _, pool := range lb.Pools {
 
 			monitorList, err := os.cloud.(openstack.OpenstackCloud).ListMonitors(monitors.ListOpts{
@@ -115,7 +115,7 @@ func (os *clusterDiscoveryOS) DeleteSubnetLBs(subnet subnets.Subnet) ([]*resourc
 			resourceTrackers = append(resourceTrackers, resourceTracker)
 		}
 
-		//Identify listeners associated to this LB
+		// Identify listeners associated to this LB
 		for _, listener := range lb.Listeners {
 			resourceTracker := &resources.Resource{
 				Name: listener.Name,

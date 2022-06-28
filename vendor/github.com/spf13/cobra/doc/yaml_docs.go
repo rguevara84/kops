@@ -37,6 +37,7 @@ type cmdDoc struct {
 	Name             string
 	Synopsis         string      `yaml:",omitempty"`
 	Description      string      `yaml:",omitempty"`
+	Usage            string      `yaml:",omitempty"`
 	Options          []cmdOption `yaml:",omitempty"`
 	InheritedOptions []cmdOption `yaml:"inherited_options,omitempty"`
 	Example          string      `yaml:",omitempty"`
@@ -65,7 +66,7 @@ func GenYamlTreeCustom(cmd *cobra.Command, dir string, filePrepender, linkHandle
 		}
 	}
 
-	basename := strings.Replace(cmd.CommandPath(), " ", "_", -1) + ".yaml"
+	basename := strings.ReplaceAll(cmd.CommandPath(), " ", "_") + ".yaml"
 	filename := filepath.Join(dir, basename)
 	f, err := os.Create(filename)
 	if err != nil {
@@ -97,6 +98,10 @@ func GenYamlCustom(cmd *cobra.Command, w io.Writer, linkHandler func(string) str
 
 	yamlDoc.Synopsis = forceMultiLine(cmd.Short)
 	yamlDoc.Description = forceMultiLine(cmd.Long)
+
+	if cmd.Runnable() {
+		yamlDoc.Usage = cmd.UseLine()
+	}
 
 	if len(cmd.Example) > 0 {
 		yamlDoc.Example = cmd.Example

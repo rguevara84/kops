@@ -17,26 +17,29 @@ limitations under the License.
 package awstasks
 
 import (
-	"fmt"
-
 	"encoding/json"
+	"fmt"
+	"hash/fnv"
 	"net/url"
+	"sort"
+	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/diff"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=IAMRolePolicy
+// +kops:fitask
 type IAMRolePolicy struct {
 	ID        *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	Name *string
 	Role *IAMRole
@@ -44,10 +47,49 @@ type IAMRolePolicy struct {
 	// The PolicyDocument to create as an inline policy.
 	// If the PolicyDocument is empty, the policy will be removed.
 	PolicyDocument fi.Resource
+	// External (non-kops managed) AWS policies to attach to the role
+	ExternalPolicies *[]string
+	// Managed tracks the use of ExternalPolicies
+	Managed bool
 }
 
 func (e *IAMRolePolicy) Find(c *fi.Context) (*IAMRolePolicy, error) {
+	var actual IAMRolePolicy
+
 	cloud := c.Cloud.(awsup.AWSCloud)
+
+	// Handle policy overrides
+	if e.ExternalPolicies != nil {
+		request := &iam.ListAttachedRolePoliciesInput{
+			RoleName: e.Role.Name,
+		}
+
+		response, err := cloud.IAM().ListAttachedRolePolicies(request)
+		if awsErr, ok := err.(awserr.Error); ok {
+			if awsErr.Code() == iam.ErrCodeNoSuchEntityException {
+				return nil, nil
+			}
+
+			return nil, fmt.Errorf("error getting policies for role: %v", err)
+		}
+
+		var policies []string
+		if response != nil && len(response.AttachedPolicies) > 0 {
+			for _, policy := range response.AttachedPolicies {
+				policies = append(policies, aws.StringValue(policy.PolicyArn))
+			}
+		}
+		sort.Strings(policies)
+
+		actual.ID = e.ID
+		actual.Name = e.Name
+		actual.Lifecycle = e.Lifecycle
+		actual.Role = e.Role
+		actual.Managed = true
+		actual.ExternalPolicies = &policies
+
+		return &actual, nil
+	}
 
 	request := &iam.GetRolePolicyInput{
 		RoleName:   e.Role.Name,
@@ -56,7 +98,7 @@ func (e *IAMRolePolicy) Find(c *fi.Context) (*IAMRolePolicy, error) {
 
 	response, err := cloud.IAM().GetRolePolicy(request)
 	if awsErr, ok := err.(awserr.Error); ok {
-		if awsErr.Code() == "NoSuchEntity" {
+		if awsErr.Code() == iam.ErrCodeNoSuchEntityException {
 			return nil, nil
 		}
 	}
@@ -65,7 +107,6 @@ func (e *IAMRolePolicy) Find(c *fi.Context) (*IAMRolePolicy, error) {
 	}
 
 	p := response
-	actual := &IAMRolePolicy{}
 	actual.Role = &IAMRole{Name: p.RoleName}
 	if aws.StringValue(e.Role.Name) == aws.StringValue(p.RoleName) {
 		actual.Role.ID = e.Role.ID
@@ -77,7 +118,19 @@ func (e *IAMRolePolicy) Find(c *fi.Context) (*IAMRolePolicy, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error parsing PolicyDocument for IAMRolePolicy %q: %v", aws.StringValue(e.Name), err)
 		}
-		actual.PolicyDocument = fi.WrapResource(fi.NewStringResource(policy))
+
+		// Reformat the PolicyDocument by unmarshaling and re-marshaling to JSON.
+		// This will make it possible to compare it when using CloudFormation.
+		var jsonData interface{}
+		err = json.Unmarshal([]byte(policy), &jsonData)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing cloudformation policy document from JSON: %v", err)
+		}
+		jsonBytes, err := json.MarshalIndent(jsonData, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("error converting cloudformation policy document to JSON: %v", err)
+		}
+		actual.PolicyDocument = fi.NewStringResource(string(jsonBytes))
 	}
 
 	actual.Name = p.PolicyName
@@ -87,7 +140,7 @@ func (e *IAMRolePolicy) Find(c *fi.Context) (*IAMRolePolicy, error) {
 	// Avoid spurious changes
 	actual.Lifecycle = e.Lifecycle
 
-	return actual, nil
+	return &actual, nil
 }
 
 func (e *IAMRolePolicy) Run(c *fi.Context) error {
@@ -109,9 +162,10 @@ func (_ *IAMRolePolicy) ShouldCreate(a, e, changes *IAMRolePolicy) (bool, error)
 		return false, fmt.Errorf("error rendering PolicyDocument: %v", err)
 	}
 
-	if a == nil && ePolicy == "" {
+	if a == nil && ePolicy == "" && e.ExternalPolicies == nil {
 		return false, nil
 	}
+
 	return true, nil
 }
 
@@ -119,6 +173,55 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 	policy, err := e.policyDocumentString()
 	if err != nil {
 		return fmt.Errorf("error rendering PolicyDocument: %v", err)
+	}
+
+	// Handles the full lifecycle of Policy Overrides
+	if e.Managed {
+		// Attach policies that are not already attached
+	AttachPolicies:
+		for _, policy := range *e.ExternalPolicies {
+			for _, cloudPolicy := range *a.ExternalPolicies {
+				if cloudPolicy == policy {
+					continue AttachPolicies
+				}
+			}
+
+			request := &iam.AttachRolePolicyInput{
+				RoleName:  e.Role.Name,
+				PolicyArn: s(policy),
+			}
+
+			_, err = t.Cloud.IAM().AttachRolePolicy(request)
+			if err != nil {
+				return fmt.Errorf("error attaching IAMRolePolicy: %v", err)
+			}
+		}
+
+		// Clean up unused cloud policies
+	CheckPolicies:
+		for _, cloudPolicy := range *a.ExternalPolicies {
+			for _, policy := range *e.ExternalPolicies {
+				if policy == cloudPolicy {
+					continue CheckPolicies
+				}
+			}
+
+			klog.V(2).Infof("Detaching unused IAMRolePolicy %s/%s", aws.StringValue(e.Role.Name), cloudPolicy)
+
+			// Detach policy
+			request := &iam.DetachRolePolicyInput{
+				RoleName:  e.Role.Name,
+				PolicyArn: s(cloudPolicy),
+			}
+
+			_, err := t.Cloud.IAM().DetachRolePolicy(request)
+			if err != nil {
+				klog.V(2).Infof("Unable to detach IAMRolePolicy %s/%s", aws.StringValue(e.Role.Name), cloudPolicy)
+				return err
+			}
+		}
+
+		return nil
 	}
 
 	if policy == "" {
@@ -131,7 +234,7 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 		klog.V(2).Infof("Deleting role policy %s/%s", aws.StringValue(e.Role.Name), aws.StringValue(e.Name))
 		_, err = t.Cloud.IAM().DeleteRolePolicy(request)
 		if err != nil {
-			if awsup.AWSErrorCode(err) == "NoSuchEntity" {
+			if awsup.AWSErrorCode(err) == iam.ErrCodeNoSuchEntityException {
 				// Already deleted
 				klog.V(2).Infof("Got NoSuchEntity deleting role policy %s/%s; assuming does not exist", aws.StringValue(e.Role.Name), aws.StringValue(e.Name))
 				return nil
@@ -176,6 +279,7 @@ func (_ *IAMRolePolicy) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAMRoleP
 
 		_, err = t.Cloud.IAM().PutRolePolicy(request)
 		if err != nil {
+			klog.V(2).Infof("PutRolePolicy RoleName=%s PolicyName=%s: %s", aws.StringValue(e.Role.Name), aws.StringValue(e.Name), policy)
 			return fmt.Errorf("error creating/updating IAMRolePolicy: %v", err)
 		}
 	}
@@ -188,16 +292,46 @@ func (e *IAMRolePolicy) policyDocumentString() (string, error) {
 	if e.PolicyDocument == nil {
 		return "", nil
 	}
-	return fi.ResourceAsString(e.PolicyDocument)
+
+	policy, err := fi.ResourceAsString(e.PolicyDocument)
+	if err != nil {
+		return "", err
+	}
+	policySize := len(strings.Join(strings.Fields(policy), ""))
+	if policySize > 10240 {
+		return "", fmt.Errorf("policy size was %d. Policy cannot exceed 10240 bytes", policySize)
+	}
+	return policy, err
 }
 
 type terraformIAMRolePolicy struct {
-	Name           *string            `json:"name"`
-	Role           *terraform.Literal `json:"role"`
-	PolicyDocument *terraform.Literal `json:"policy"`
+	Name           *string                  `cty:"name"`
+	Role           *terraformWriter.Literal `cty:"role"`
+	PolicyDocument *terraformWriter.Literal `cty:"policy"`
+	PolicyArn      *string                  `cty:"policy_arn"`
 }
 
 func (_ *IAMRolePolicy) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *IAMRolePolicy) error {
+	if e.ExternalPolicies != nil && len(*e.ExternalPolicies) > 0 {
+		for _, policy := range *e.ExternalPolicies {
+			// create a hash of the arn
+			h := fnv.New32a()
+			h.Write([]byte(policy))
+
+			name := fmt.Sprintf("%s-%d", *e.Name, h.Sum32())
+
+			tf := &terraformIAMRolePolicy{
+				Role:      e.Role.TerraformLink(),
+				PolicyArn: s(policy),
+			}
+
+			err := t.RenderResource("aws_iam_role_policy_attachment", name, tf)
+			if err != nil {
+				return fmt.Errorf("error rendering RolePolicyAttachment: %v", err)
+			}
+		}
+	}
+
 	policyString, err := e.policyDocumentString()
 	if err != nil {
 		return fmt.Errorf("error rendering PolicyDocument: %v", err)
@@ -208,7 +342,7 @@ func (_ *IAMRolePolicy) RenderTerraform(t *terraform.TerraformTarget, a, e, chan
 		return nil
 	}
 
-	policy, err := t.AddFile("aws_iam_role_policy", *e.Name, "policy", e.PolicyDocument)
+	policy, err := t.AddFileResource("aws_iam_role_policy", *e.Name, "policy", e.PolicyDocument, false)
 	if err != nil {
 		return fmt.Errorf("error rendering PolicyDocument: %v", err)
 	}
@@ -222,8 +356,8 @@ func (_ *IAMRolePolicy) RenderTerraform(t *terraform.TerraformTarget, a, e, chan
 	return t.RenderResource("aws_iam_role_policy", *e.Name, tf)
 }
 
-func (e *IAMRolePolicy) TerraformLink() *terraform.Literal {
-	return terraform.LiteralSelfLink("aws_iam_role_policy", *e.Name)
+func (e *IAMRolePolicy) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralSelfLink("aws_iam_role_policy", *e.Name)
 }
 
 type cloudformationIAMRolePolicy struct {
@@ -233,6 +367,12 @@ type cloudformationIAMRolePolicy struct {
 }
 
 func (_ *IAMRolePolicy) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *IAMRolePolicy) error {
+	// Currently CloudFormation does not have a reciprocal function to Terraform that allows the modification of a role
+	// after the fact. In order to make this feature complete we would have to intercept the role task and modify it.
+	if e.ExternalPolicies != nil && len(*e.ExternalPolicies) > 0 {
+		return fmt.Errorf("CloudFormation not supported for use with ExternalPolicies.")
+	}
+
 	policyString, err := e.policyDocumentString()
 	if err != nil {
 		return fmt.Errorf("error rendering PolicyDocument: %v", err)

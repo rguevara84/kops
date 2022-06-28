@@ -12,8 +12,8 @@
 
 * All unpatched versions of linux are vulnerable when running on affected hardware, across all platforms (AWS, GCE, etc)
 * Patches are included in Linux 4.4.110 for 4.4, 4.9.75 for 4.9, 4.14.12 for 4.14.
-* kops can run an image of your choice, so we can only provide detailed advice for the default image.
-* By default, kops runs an image that includes the 4.4 kernel. An updated image is available with the patched version (4.4.110).  Users running the default image are strongly encouraged to upgrade.
+* kOps can run an image of your choice, so we can only provide detailed advice for the default image.
+* By default, kOps runs an image that includes the 4.4 kernel. An updated image is available with the patched version (4.4.110).  Users running the default image are strongly encouraged to upgrade.
 * If running another image please see your distro for updated images.
 
 ## CVEs
@@ -56,7 +56,7 @@ other vendors for the appropriate AMI version.
 
 ### Update Process
 
-For all examples please replace `$CLUSTER` with the appropriate kops cluster
+For all examples please replace `$CLUSTER` with the appropriate kOps cluster
 name.
 
 #### List instance groups
@@ -94,6 +94,7 @@ running the updated image.
 `kops rolling-update cluster --name $CLUSTER --yes`
 
 ## Resources / Notes
+
 - https://aws.amazon.com/de/security/security-bulletins/AWS-2018-013/
 - https://security.googleblog.com/2018/01/todays-cpu-vulnerability-what-you-need.html
 - https://coreos.com/blog/container-linux-meltdown-patch

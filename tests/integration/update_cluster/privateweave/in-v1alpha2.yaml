@@ -18,7 +18,10 @@ spec:
     - instanceGroup: master-us-test-1a
       name: us-test-1a
     name: events
-  kubernetesVersion: v1.14.0
+  iam: {}
+  kubelet:
+    anonymousAuth: false
+  kubernetesVersion: v1.21.0
   masterInternalName: api.internal.privateweave.example.com
   masterPublicName: api.privateweave.example.com
   networkCIDR: 172.20.0.0/16

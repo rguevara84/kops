@@ -22,7 +22,8 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 
 	"k8s.io/kops/pkg/pki"
 	"k8s.io/kops/upup/pkg/fi"
@@ -31,14 +32,18 @@ import (
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=SSHKey
+// +kops:fitask
 type SSHKey struct {
+	ID        *string
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
+	Shared    bool
 
-	PublicKey *fi.ResourceHolder
+	PublicKey fi.Resource
 
 	KeyFingerprint *string
+
+	Tags map[string]string
 }
 
 var _ fi.CompareWithID = &SSHKey{}
@@ -77,13 +82,22 @@ func (e *SSHKey) find(cloud awsup.AWSCloud) (*SSHKey, error) {
 	}
 
 	k := response.KeyPairs[0]
-
 	actual := &SSHKey{
+		ID:             k.KeyPairId,
 		Name:           k.KeyName,
 		KeyFingerprint: k.KeyFingerprint,
+		Tags:           mapEC2TagsToMap(k.Tags),
+		Shared:         e.Shared,
 	}
 
 	// Avoid spurious changes
+	if fi.StringValue(k.KeyType) == ec2.KeyTypeEd25519 {
+		// Trim the trailing "=" and prefix with "SHA256:" to match the output of "ssh-keygen -lf"
+		fingerprint := fi.StringValue(k.KeyFingerprint)
+		fingerprint = strings.TrimRight(fingerprint, "=")
+		fingerprint = fmt.Sprintf("SHA256:%s", fingerprint)
+		actual.KeyFingerprint = fi.String(fingerprint)
+	}
 	if fi.StringValue(actual.KeyFingerprint) == fi.StringValue(e.KeyFingerprint) {
 		klog.V(2).Infof("SSH key fingerprints match; assuming public keys match")
 		actual.PublicKey = e.PublicKey
@@ -91,13 +105,16 @@ func (e *SSHKey) find(cloud awsup.AWSCloud) (*SSHKey, error) {
 		klog.V(2).Infof("Computed SSH key fingerprint mismatch: %q %q", fi.StringValue(e.KeyFingerprint), fi.StringValue(actual.KeyFingerprint))
 	}
 	actual.Lifecycle = e.Lifecycle
-
+	if actual.Shared {
+		// Don't report tag changes on shared keys
+		actual.Tags = e.Tags
+	}
 	return actual, nil
 }
 
 func (e *SSHKey) Run(c *fi.Context) error {
 	if e.KeyFingerprint == nil && e.PublicKey != nil {
-		publicKey, err := e.PublicKey.AsString()
+		publicKey, err := fi.ResourceAsString(e.PublicKey)
 		if err != nil {
 			return fmt.Errorf("error reading SSH public key: %v", err)
 		}
@@ -108,16 +125,19 @@ func (e *SSHKey) Run(c *fi.Context) error {
 		}
 		klog.V(2).Infof("Computed SSH key fingerprint as %q", keyFingerprint)
 		e.KeyFingerprint = &keyFingerprint
-	} else if e.IsExistingKey() && *e.Name != "" {
-		a, err := e.Find(c)
-		if err != nil {
-			return err
-		}
+	}
+	a, err := e.Find(c)
+	if err != nil {
+		return err
+	}
+	if e.IsExistingKey() && *e.Name != "" {
 		if a == nil {
 			return fmt.Errorf("unable to find specified SSH key %q", *e.Name)
 		}
-
 		e.KeyFingerprint = a.KeyFingerprint
+	}
+	if a != nil {
+		e.ID = a.ID
 	}
 	return fi.DefaultDeltaRunMethod(e, c)
 }
@@ -135,11 +155,12 @@ func (e *SSHKey) createKeypair(cloud awsup.AWSCloud) error {
 	klog.V(2).Infof("Creating SSHKey with Name:%q", *e.Name)
 
 	request := &ec2.ImportKeyPairInput{
-		KeyName: e.Name,
+		KeyName:           e.Name,
+		TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeKeyPair, e.Tags),
 	}
 
 	if e.PublicKey != nil {
-		d, err := e.PublicKey.AsBytes()
+		d, err := fi.ResourceAsBytes(e.PublicKey)
 		if err != nil {
 			return fmt.Errorf("error rendering SSHKey PublicKey: %v", err)
 		}
@@ -152,6 +173,7 @@ func (e *SSHKey) createKeypair(cloud awsup.AWSCloud) error {
 	}
 
 	e.KeyFingerprint = response.KeyFingerprint
+	e.ID = response.KeyPairId
 
 	return nil
 }
@@ -161,13 +183,16 @@ func (_ *SSHKey) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *SSHKey) error {
 		return e.createKeypair(t.Cloud)
 	}
 
-	// No tags on SSH public key
-	return nil //return output.AddAWSTags(cloud.Tags(), v, "vpc")
+	if !e.Shared {
+		return t.AddAWSTags(*e.ID, e.Tags)
+	}
+	return nil
 }
 
 type terraformSSHKey struct {
-	Name      *string            `json:"key_name"`
-	PublicKey *terraform.Literal `json:"public_key"`
+	Name      *string                  `cty:"key_name"`
+	PublicKey *terraformWriter.Literal `cty:"public_key"`
+	Tags      map[string]string        `cty:"tags"`
 }
 
 func (_ *SSHKey) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *SSHKey) error {
@@ -176,7 +201,7 @@ func (_ *SSHKey) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *SS
 		return nil
 	}
 	tfName := strings.Replace(*e.Name, ":", "", -1)
-	publicKey, err := t.AddFile("aws_key_pair", tfName, "public_key", e.PublicKey)
+	publicKey, err := t.AddFileResource("aws_key_pair", tfName, "public_key", e.PublicKey, false)
 	if err != nil {
 		return fmt.Errorf("error rendering PublicKey: %v", err)
 	}
@@ -184,6 +209,7 @@ func (_ *SSHKey) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *SS
 	tf := &terraformSSHKey{
 		Name:      e.Name,
 		PublicKey: publicKey,
+		Tags:      e.Tags,
 	}
 
 	return t.RenderResource("aws_key_pair", tfName, tf)
@@ -195,25 +221,32 @@ func (e *SSHKey) IsExistingKey() bool {
 	return e.PublicKey == nil
 }
 
-func (e *SSHKey) TerraformLink() *terraform.Literal {
+func (e *SSHKey) TerraformLink() *terraformWriter.Literal {
+	if e.NoSSHKey() {
+		return nil
+	}
 	if e.IsExistingKey() {
-		return terraform.LiteralFromStringValue(*e.Name)
+		return terraformWriter.LiteralFromStringValue(*e.Name)
 	}
 	tfName := strings.Replace(*e.Name, ":", "", -1)
-	return terraform.LiteralProperty("aws_key_pair", tfName, "id")
+	return terraformWriter.LiteralProperty("aws_key_pair", tfName, "id")
 }
 
 func (_ *SSHKey) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *SSHKey) error {
+	if e.NoSSHKey() {
+		return nil
+	}
+
 	cloud := t.Cloud.(awsup.AWSCloud)
 
 	klog.Warningf("Cloudformation does not manage SSH keys; pre-creating SSH key")
 
-	a, err := e.find(cloud)
+	keypair, err := e.find(cloud)
 	if err != nil {
 		return err
 	}
 
-	if a == nil {
+	if keypair == nil {
 		err := e.createKeypair(cloud)
 		if err != nil {
 			return err
@@ -221,4 +254,8 @@ func (_ *SSHKey) RenderCloudformation(t *cloudformation.CloudformationTarget, a,
 	}
 
 	return nil
+}
+
+func (e *SSHKey) NoSSHKey() bool {
+	return e.ID == nil && e.Name == nil && e.PublicKey == nil && e.KeyFingerprint == nil
 }

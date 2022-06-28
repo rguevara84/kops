@@ -20,6 +20,7 @@ import (
 	"fmt"
 
 	storage "google.golang.org/api/storage/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/acls"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi/cloudup"
@@ -28,14 +29,13 @@ import (
 )
 
 // gcsAclStrategy is the AclStrategy for objects written to google cloud storage
-type gcsAclStrategy struct {
-}
+type gcsAclStrategy struct{}
 
 var _ acls.ACLStrategy = &gcsAclStrategy{}
 
 // GetACL returns the ACL to use if this is a google cloud storage path
 func (s *gcsAclStrategy) GetACL(p vfs.Path, cluster *kops.Cluster) (vfs.ACL, error) {
-	if kops.CloudProviderID(cluster.Spec.CloudProvider) != kops.CloudProviderGCE {
+	if cluster.Spec.GetCloudProvider() != kops.CloudProviderGCE {
 		return nil, nil
 	}
 	gcsPath, ok := p.(*vfs.GSPath)
@@ -50,6 +50,16 @@ func (s *gcsAclStrategy) GetACL(p vfs.Path, cluster *kops.Cluster) (vfs.ACL, err
 	bucket, err := client.Buckets.Get(bucketName).Do()
 	if err != nil {
 		return nil, fmt.Errorf("error querying bucket %q: %v", bucketName, err)
+	}
+
+	bucketPolicyOnly := false
+	if bucket.IamConfiguration != nil && bucket.IamConfiguration.BucketPolicyOnly != nil {
+		bucketPolicyOnly = bucket.IamConfiguration.BucketPolicyOnly.Enabled
+	}
+
+	if bucketPolicyOnly {
+		klog.Infof("bucket gs://%s has bucket-policy only; won't try to set ACLs", bucketName)
+		return nil, nil
 	}
 
 	// TODO: Cache?

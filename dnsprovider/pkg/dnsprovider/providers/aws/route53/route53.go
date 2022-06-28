@@ -24,7 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/route53"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 )
 
@@ -36,7 +36,7 @@ const (
 var MaxBatchSize = 900
 
 func init() {
-	dnsprovider.RegisterDnsProvider(ProviderName, func(config io.Reader) (dnsprovider.Interface, error) {
+	dnsprovider.RegisterDNSProvider(ProviderName, func(config io.Reader) (dnsprovider.Interface, error) {
 		return newRoute53(config)
 	})
 }
@@ -63,7 +63,12 @@ func newRoute53(config io.Reader) (*Interface, error) {
 	// e.g. https://github.com/kubernetes/kops/issues/605
 	awsConfig = awsConfig.WithCredentialsChainVerboseErrors(true)
 
-	sess, err := session.NewSession()
+	// To avoid API throttling on busier accounts
+	awsConfig = awsConfig.WithMaxRetries(5)
+
+	sess, err := session.NewSessionWithOptions(session.Options{
+		SharedConfigState: session.SharedConfigEnable,
+	})
 	if err != nil {
 		return nil, err
 	}

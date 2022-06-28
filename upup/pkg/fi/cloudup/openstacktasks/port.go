@@ -18,24 +18,27 @@ package openstacktasks
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	secgroup "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=Port
+// +kops:fitask
 type Port struct {
 	ID                       *string
 	Name                     *string
+	InstanceGroupName        *string
 	Network                  *Network
 	Subnets                  []*Subnet
 	SecurityGroups           []*SecurityGroup
 	AdditionalSecurityGroups []string
-	Lifecycle                *fi.Lifecycle
-	Tag                      *string
+	Lifecycle                fi.Lifecycle
+	Tags                     []string
 }
 
 // GetDependencies returns the dependencies of the Port task
@@ -61,7 +64,7 @@ func (s *Port) CompareWithID() *string {
 	return s.ID
 }
 
-func NewPortTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecycle, port *ports.Port, find *Port) (*Port, error) {
+func newPortTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle fi.Lifecycle, port *ports.Port, find *Port) (*Port, error) {
 	additionalSecurityGroupIDs := map[string]struct{}{}
 	if find != nil {
 		for _, sg := range find.AdditionalSecurityGroups {
@@ -88,6 +91,10 @@ func NewPortTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecycl
 			Lifecycle: lifecycle,
 		})
 	}
+
+	// sort for consistent comparison
+	sort.Sort(SecurityGroupsByID(sgs))
+
 	subnets := make([]*Subnet, len(port.FixedIPs))
 	for i, subn := range port.FixedIPs {
 		subnets[i] = &Subnet{
@@ -96,22 +103,44 @@ func NewPortTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecycl
 		}
 	}
 
-	tag := ""
-	if find != nil && fi.ArrayContains(port.Tags, fi.StringValue(find.Tag)) {
-		tag = fi.StringValue(find.Tag)
+	var tags []string
+
+	if find != nil {
+		for _, t := range find.Tags {
+			if fi.ArrayContains(port.Tags, t) {
+				tags = append(tags, t)
+			}
+		}
+	} else {
+		tags = port.Tags
+	}
+
+	var cloudInstanceGroupName *string
+	for _, t := range port.Tags {
+		prefix := fmt.Sprintf("%s=", openstack.TagKopsInstanceGroup)
+		if !strings.HasPrefix(t, prefix) {
+			continue
+		}
+		cloudInstanceGroupName = fi.String("")
+		scanString := fmt.Sprintf("%s%%s", prefix)
+		if _, err := fmt.Sscanf(t, scanString, cloudInstanceGroupName); err != nil {
+			klog.V(2).Infof("Error extracting instance group for Port with name: %q", port.Name)
+		}
 	}
 
 	actual := &Port{
-		ID:             fi.String(port.ID),
-		Name:           fi.String(port.Name),
-		Network:        &Network{ID: fi.String(port.NetworkID)},
-		SecurityGroups: sgs,
-		Subnets:        subnets,
-		Lifecycle:      lifecycle,
-		Tag:            fi.String(tag),
+		ID:                fi.String(port.ID),
+		InstanceGroupName: cloudInstanceGroupName,
+		Name:              fi.String(port.Name),
+		Network:           &Network{ID: fi.String(port.NetworkID)},
+		SecurityGroups:    sgs,
+		Subnets:           subnets,
+		Lifecycle:         lifecycle,
+		Tags:              tags,
 	}
 	if find != nil {
 		find.ID = actual.ID
+		actual.InstanceGroupName = find.InstanceGroupName
 		actual.AdditionalSecurityGroups = find.AdditionalSecurityGroups
 	}
 	return actual, nil
@@ -131,7 +160,11 @@ func (s *Port) Find(context *fi.Context) (*Port, error) {
 	} else if len(rs) != 1 {
 		return nil, fmt.Errorf("found multiple ports with name: %s", fi.StringValue(s.Name))
 	}
-	return NewPortTaskFromCloud(cloud, s.Lifecycle, &rs[0], s)
+
+	// sort for consistent comparison
+	sort.Sort(SecurityGroupsByID(s.SecurityGroups))
+
+	return newPortTaskFromCloud(cloud, s.Lifecycle, &rs[0], s)
 }
 
 func (s *Port) Run(context *fi.Context) error {
@@ -161,7 +194,7 @@ func (*Port) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Por
 	if a == nil {
 		klog.V(2).Infof("Creating Port with name: %q", fi.StringValue(e.Name))
 
-		opt, err := portCreateOptsFromPortTask(a, e, changes)
+		opt, err := portCreateOptsFromPortTask(t, a, e, changes)
 		if err != nil {
 			return fmt.Errorf("Error creating port cloud opts: %v", err)
 		}
@@ -171,19 +204,25 @@ func (*Port) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Por
 			return fmt.Errorf("Error creating port: %v", err)
 		}
 
-		if e.Tag != nil {
-			err = t.Cloud.AppendTag(openstack.ResourceTypePort, v.ID, fi.StringValue(e.Tag))
-			if err != nil {
-				return fmt.Errorf("Error appending tag to port: %v", err)
+		if e.Tags != nil {
+			for _, tag := range e.Tags {
+				err = t.Cloud.AppendTag(openstack.ResourceTypePort, v.ID, tag)
+				if err != nil {
+					return fmt.Errorf("Error appending tag to port: %v", err)
+				}
 			}
 		}
 		e.ID = fi.String(v.ID)
 		klog.V(2).Infof("Creating a new Openstack port, id=%s", v.ID)
 		return nil
-	} else if changes != nil && changes.Tag != nil {
-		err := t.Cloud.AppendTag(openstack.ResourceTypePort, fi.StringValue(a.ID), fi.StringValue(changes.Tag))
-		if err != nil {
-			return fmt.Errorf("Error appending tag to port: %v", err)
+	}
+	if changes != nil && changes.Tags != nil {
+		klog.V(2).Infof("Updating tags for Port with name: %q", fi.StringValue(e.Name))
+		for _, tag := range e.Tags {
+			err := t.Cloud.AppendTag(openstack.ResourceTypePort, fi.StringValue(a.ID), tag)
+			if err != nil {
+				return fmt.Errorf("Error appending tag to port: %v", err)
+			}
 		}
 	}
 	e.ID = a.ID
@@ -191,13 +230,23 @@ func (*Port) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *Por
 	return nil
 }
 
-func portCreateOptsFromPortTask(a, e, changes *Port) (ports.CreateOptsBuilder, error) {
+func portCreateOptsFromPortTask(t *openstack.OpenstackAPITarget, a, e, changes *Port) (ports.CreateOptsBuilder, error) {
 	sgs := make([]string, len(e.SecurityGroups)+len(e.AdditionalSecurityGroups))
 	for i, sg := range e.SecurityGroups {
 		sgs[i] = fi.StringValue(sg.ID)
 	}
 	for i, sg := range e.AdditionalSecurityGroups {
-		sgs[i+len(e.SecurityGroups)] = sg
+		opt := secgroup.ListOpts{
+			Name: sg,
+		}
+		gs, err := t.Cloud.ListSecurityGroups(opt)
+		if err != nil {
+			continue
+		}
+		if len(gs) == 0 {
+			return nil, fmt.Errorf("Additional SecurityGroup not found for name %s", sg)
+		}
+		sgs[i+len(e.SecurityGroups)] = gs[0].ID
 	}
 	fixedIPs := make([]ports.IP, len(e.Subnets))
 	for i, subn := range e.Subnets {

@@ -22,11 +22,10 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
-	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
 // UserTask is responsible for creating a user, by calling useradd
@@ -48,21 +47,6 @@ var _ fi.HasName = &File{}
 
 func (f *UserTask) GetName() *string {
 	return &f.Name
-}
-
-func (f *UserTask) SetName(name string) {
-	klog.Fatalf("SetName not supported for User task")
-}
-
-func NewUserTask(name string, contents string, meta string) (fi.Task, error) {
-	s := &UserTask{Name: name}
-
-	err := utils.YamlUnmarshal([]byte(contents), s)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing json for service %q: %v", name, err)
-	}
-
-	return s, nil
 }
 
 func (e *UserTask) Find(c *fi.Context) (*UserTask, error) {

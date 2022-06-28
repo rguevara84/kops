@@ -18,12 +18,15 @@ spec:
     - instanceGroup: master-us-test-1a
       name: us-test-1a
     name: events
-  kubernetesVersion: v1.14.0
+  iam: {}
+  kubelet:
+    anonymousAuth: false
+  kubernetesVersion: v1.21.0
   masterInternalName: api.internal.privatekopeio.example.com
   masterPublicName: api.privatekopeio.example.com
   networkCIDR: 172.20.0.0/16
   networking:
-    weave: {}
+    kopeio: {}
   nonMasqueradeCIDR: 100.64.0.0/10
   sshAccess:
   - 0.0.0.0/0

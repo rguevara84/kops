@@ -17,6 +17,7 @@ limitations under the License.
 package awsup
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -63,5 +64,78 @@ func TestFindRegion(t *testing.T) {
 			t.Fatalf("unexpected region for zone: %q vs %q", expected, region)
 		}
 	}
+}
 
+func TestEC2TagSpecification(t *testing.T) {
+	cases := []struct {
+		Name          string
+		ResourceType  string
+		Tags          map[string]string
+		Specification []*ec2.TagSpecification
+	}{
+		{
+			Name: "No tags",
+		},
+		{
+			Name:         "simple tag",
+			ResourceType: "vpc",
+			Tags: map[string]string{
+				"foo": "bar",
+			},
+			Specification: []*ec2.TagSpecification{
+				{
+					ResourceType: aws.String("vpc"),
+					Tags: []*ec2.Tag{
+						{
+							Key:   aws.String("foo"),
+							Value: aws.String("bar"),
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			s := EC2TagSpecification(tc.ResourceType, tc.Tags)
+			if !reflect.DeepEqual(s, tc.Specification) {
+				t.Fatalf("tag specifications did not match: %q vs %q", s, tc.Specification)
+			}
+		})
+	}
+}
+
+func Test_GetResourceName32(t *testing.T) {
+	grid := []struct {
+		ClusterName string
+		Prefix      string
+		Expected    string
+	}{
+		{
+			"mycluster",
+			"bastion",
+			"bastion-mycluster-vnrjie",
+		},
+		{
+			"mycluster.example.com",
+			"bastion",
+			"bastion-mycluster-example-o8elkm",
+		},
+		{
+			"this.is.a.very.long.cluster.example.com",
+			"api",
+			"api-this-is-a-very-long-c-q4ukp4",
+		},
+		{
+			"this.is.a.very.long.cluster.example.com",
+			"bastion",
+			"bastion-this-is-a-very-lo-4ggpa2",
+		},
+	}
+	for _, g := range grid {
+		actual := GetResourceName32(g.ClusterName, g.Prefix)
+		if actual != g.Expected {
+			t.Errorf("unexpected result from %q+%q.  expected %q, got %q", g.Prefix, g.ClusterName, g.Expected, actual)
+		}
+	}
 }

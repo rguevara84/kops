@@ -23,8 +23,10 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/elb"
 	"k8s.io/kops/cloudmock/aws/mockec2"
 	"k8s.io/kops/pkg/resources"
+	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 )
 
@@ -92,7 +94,7 @@ func TestAddUntaggedRouteTables(t *testing.T) {
 
 func TestListRouteTables(t *testing.T) {
 	cloud := awsup.BuildMockAWSCloud("us-east-1", "abc")
-	//resources := make(map[string]*Resource)
+	// resources := make(map[string]*Resource)
 	clusterName := "me.example.com"
 	ownershipTagKey := "kubernetes.io/cluster/" + clusterName
 
@@ -138,6 +140,120 @@ func TestListRouteTables(t *testing.T) {
 		}
 		if rt.ID == "rtb-owned" && rt.Shared {
 			t.Fatalf("expected Shared: false, got: %v", rt.Shared)
+		}
+	}
+}
+
+func TestSharedVolume(t *testing.T) {
+	cloud := awsup.BuildMockAWSCloud("us-east-1", "abc")
+	clusterName := "me.example.com"
+	ownershipTagKey := "kubernetes.io/cluster/" + clusterName
+
+	c := &mockec2.MockEC2{}
+	cloud.MockEC2 = c
+
+	sharedVolume, err := c.CreateVolume(&ec2.CreateVolumeInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				ResourceType: aws.String(ec2.ResourceTypeVolume),
+				Tags: []*ec2.Tag{
+					{
+						Key:   aws.String(ownershipTagKey),
+						Value: aws.String("shared"),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("error creating volume: %v", err)
+	}
+
+	ownedVolume, err := c.CreateVolume(&ec2.CreateVolumeInput{
+		TagSpecifications: []*ec2.TagSpecification{
+			{
+				Tags: []*ec2.Tag{
+					{
+						Key:   aws.String(ownershipTagKey),
+						Value: aws.String("owned"),
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("error creating volume: %v", err)
+	}
+
+	resourceTrackers, err := ListVolumes(cloud, clusterName)
+	if err != nil {
+		t.Fatalf("error listing volumes: %v", err)
+	}
+	t.Log(len(resourceTrackers))
+	for _, rt := range resourceTrackers {
+		if rt.ID == *sharedVolume.VolumeId && !rt.Shared {
+			t.Fatalf("expected Shared: true, got: %v", rt.Shared)
+		}
+		if rt.ID == *ownedVolume.VolumeId && rt.Shared {
+			t.Fatalf("expected Shared: false, got: %v", rt.Shared)
+		}
+	}
+}
+
+func TestMatchesElbTags(t *testing.T) {
+	tc := []struct {
+		tags     map[string]string
+		actual   []*elb.Tag
+		expected bool
+	}{
+		{
+			tags: map[string]string{"tagkey1": "tagvalue1"},
+			actual: []*elb.Tag{
+				{
+					Key:   fi.String("tagkey1"),
+					Value: fi.String("tagvalue1"),
+				},
+				{
+					Key:   fi.String("tagkey2"),
+					Value: fi.String("tagvalue2"),
+				},
+			},
+			expected: true,
+		},
+		{
+			tags: map[string]string{"tagkey2": "tagvalue2"},
+			actual: []*elb.Tag{
+				{
+					Key:   fi.String("tagkey1"),
+					Value: fi.String("tagvalue1"),
+				},
+				{
+					Key:   fi.String("tagkey2"),
+					Value: fi.String("tagvalue2"),
+				},
+			},
+			expected: true,
+		},
+		{
+			tags: map[string]string{"tagkey3": "tagvalue3"},
+			actual: []*elb.Tag{
+				{
+					Key:   fi.String("tagkey1"),
+					Value: fi.String("tagvalue1"),
+				},
+				{
+					Key:   fi.String("tagkey2"),
+					Value: fi.String("tagvalue2"),
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for i, test := range tc {
+		got := matchesElbTags(test.tags, test.actual)
+		if got != test.expected {
+			t.Fatalf("unexpected result from testcase %d, expected %v, got %v", i, test.expected, got)
 		}
 	}
 }

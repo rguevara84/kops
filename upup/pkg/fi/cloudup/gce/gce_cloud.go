@@ -18,50 +18,51 @@ package gce
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
 
-	"golang.org/x/net/context"
 	"golang.org/x/oauth2/google"
-	compute "google.golang.org/api/compute/v0.beta"
-	"google.golang.org/api/iam/v1"
+	"google.golang.org/api/cloudresourcemanager/v1"
+	compute "google.golang.org/api/compute/v1"
 	oauth2 "google.golang.org/api/oauth2/v2"
 	"google.golang.org/api/storage/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider/providers/google/clouddns"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/upup/pkg/fi/cloudup/gce/gcemetadata"
 )
 
 type GCECloud interface {
 	fi.Cloud
-	Compute() *compute.Service
+	Compute() ComputeClient
 	Storage() *storage.Service
-	IAM() *iam.Service
-
-	Region() string
+	IAM() IamClient
+	CloudDNS() DNSClient
 	Project() string
 	WaitForOp(op *compute.Operation) error
-	GetApiIngressStatus(cluster *kops.Cluster) ([]kops.ApiIngressStatus, error)
 	Labels() map[string]string
-
-	// FindClusterStatus gets the status of the cluster as it exists in GCE, inferred from volumes
-	FindClusterStatus(cluster *kops.Cluster) (*kops.ClusterStatus, error)
-
 	Zones() ([]string, error)
 
 	// ServiceAccount returns the email for the service account that the instances will run under
 	ServiceAccount() (string, error)
+
+	// CloudResourceManager returns the client for the cloudresourcemanager API
+	CloudResourceManager() *cloudresourcemanager.Service
 }
 
 type gceCloudImplementation struct {
-	compute *compute.Service
+	compute *computeClientImpl
 	storage *storage.Service
-	iam     *iam.Service
+	iam     *iamClientImpl
+	dns     *dnsClientImpl
+
+	// cloudResourceManager is the client for the cloudresourcemanager API
+	cloudResourceManager *cloudresourcemanager.Service
 
 	region  string
 	project string
@@ -125,35 +126,42 @@ func NewGCECloud(region string, project string, labels map[string]string) (GCECl
 		klog.Infof("Will load GOOGLE_APPLICATION_CREDENTIALS from %s", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
 	}
 
-	// TODO: should we create different clients with per-service scopes?
-	client, err := google.DefaultClient(ctx, compute.CloudPlatformScope)
-	if err != nil {
-		return nil, fmt.Errorf("error building google API client: %v", err)
-	}
-	computeService, err := compute.New(client)
+	computeClient, err := newComputeClientImpl(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error building compute API client: %v", err)
 	}
-	c.compute = computeService
+	c.compute = computeClient
 
-	storageService, err := storage.New(client)
+	storageService, err := storage.NewService(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error building storage API client: %v", err)
 	}
 	c.storage = storageService
 
-	iamService, err := iam.New(client)
+	iamService, err := newIamClientImpl(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error building IAM API client: %v", err)
 	}
 	c.iam = iamService
 
-	gceCloudInstances[region+"::"+project] = c
+	dnsClient, err := newDNSClientImpl(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error building DNS API client: %v", err)
+	}
+	c.dns = dnsClient
+
+	cloudResourceManager, err := cloudresourcemanager.NewService(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("error building cloudresourcemanager API client: %w", err)
+	}
+	c.cloudResourceManager = cloudResourceManager
+
+	CacheGCECloudInstance(region, project, c)
 
 	{
 		// Attempt to log the current GCE service account in user, for diagnostic purposes
 		// At least until we get e2e running, we're doing this always
-		tokenInfo, err := c.getTokenInfo(client)
+		tokenInfo, err := c.getTokenInfo(ctx)
 		if err != nil {
 			klog.Infof("unable to get token info: %v", err)
 		} else {
@@ -162,6 +170,10 @@ func NewGCECloud(region string, project string, labels map[string]string) (GCECl
 	}
 
 	return c.WithLabels(labels), nil
+}
+
+func CacheGCECloudInstance(region string, project string, c GCECloud) {
+	gceCloudInstances[region+"::"+project] = c
 }
 
 // gceCloudInternal is an interface for private functions for a gceCloudImplemention or mockGCECloud
@@ -179,7 +191,7 @@ func (c *gceCloudImplementation) WithLabels(labels map[string]string) GCECloud {
 }
 
 // Compute returns private struct element compute.
-func (c *gceCloudImplementation) Compute() *compute.Service {
+func (c *gceCloudImplementation) Compute() ComputeClient {
 	return c.compute
 }
 
@@ -189,8 +201,18 @@ func (c *gceCloudImplementation) Storage() *storage.Service {
 }
 
 // IAM returns the IAM client
-func (c *gceCloudImplementation) IAM() *iam.Service {
+func (c *gceCloudImplementation) IAM() IamClient {
 	return c.iam
+}
+
+// CloudDNS returns the DNS client
+func (c *gceCloudImplementation) CloudDNS() DNSClient {
+	return c.dns
+}
+
+// CloudResourceManager returns the client for the cloudresourcemanager API
+func (c *gceCloudImplementation) CloudResourceManager() *cloudresourcemanager.Service {
+	return c.cloudResourceManager
 }
 
 // Region returns private struct element region.
@@ -208,7 +230,7 @@ func (c *gceCloudImplementation) ServiceAccount() (string, error) {
 	if c.projectInfo == nil {
 		// Find the project info from the compute API, which includes the default service account
 		klog.V(2).Infof("fetching project %q from compute API", c.project)
-		p, err := c.compute.Projects.Get(c.project).Do()
+		p, err := c.compute.Projects().Get(c.project)
 		if err != nil {
 			return "", fmt.Errorf("error fetching info for project %q: %v", c.project, err)
 		}
@@ -226,7 +248,7 @@ func (c *gceCloudImplementation) ServiceAccount() (string, error) {
 func (c *gceCloudImplementation) DNS() (dnsprovider.Interface, error) {
 	provider, err := clouddns.CreateInterface(c.project, nil)
 	if err != nil {
-		return nil, fmt.Errorf("Error building (k8s) DNS provider: %v", err)
+		return nil, fmt.Errorf("error building (k8s) DNS provider: %v", err)
 	}
 	return provider, nil
 }
@@ -252,11 +274,11 @@ func (c *gceCloudImplementation) Labels() map[string]string {
 func (c *gceCloudImplementation) Zones() ([]string, error) {
 	var zones []string
 	// TODO: Only zones in api.Cluster object, if we have one?
-	gceZones, err := c.Compute().Zones.List(c.Project()).Do()
+	gceZones, err := c.Compute().Zones().List(context.Background(), c.Project())
 	if err != nil {
 		return nil, fmt.Errorf("error listing zones: %v", err)
 	}
-	for _, gceZone := range gceZones.Items {
+	for _, gceZone := range gceZones {
 		u, err := ParseGoogleCloudURL(gceZone.Region)
 		if err != nil {
 			return nil, err
@@ -275,17 +297,25 @@ func (c *gceCloudImplementation) Zones() ([]string, error) {
 }
 
 func (c *gceCloudImplementation) WaitForOp(op *compute.Operation) error {
-	return WaitForOp(c.compute, op)
+	return WaitForOp(c.compute.srv, op)
 }
 
-func (c *gceCloudImplementation) GetApiIngressStatus(cluster *kops.Cluster) ([]kops.ApiIngressStatus, error) {
-	var ingresses []kops.ApiIngressStatus
+func (c *gceCloudImplementation) GetApiIngressStatus(cluster *kops.Cluster) ([]fi.ApiIngressStatus, error) {
+	var ingresses []fi.ApiIngressStatus
 
 	// Note that this must match GCEModelContext::NameForForwardingRule
 	name := SafeObjectName("api", cluster.ObjectMeta.Name)
 
 	klog.V(2).Infof("Querying GCE to find ForwardingRules for API (%q)", name)
-	forwardingRule, err := c.compute.ForwardingRules.Get(c.project, c.region, name).Do()
+	// These are the ingress rules, so we search for them in the network project.
+	_, project, err := ParseNameAndProjectFromNetworkID(cluster.Spec.NetworkID)
+	if err != nil {
+		return nil, err
+	} else if project == "" {
+		project = c.Project()
+	}
+
+	forwardingRule, err := c.compute.ForwardingRules().Get(project, c.region, name)
 	if err != nil {
 		if !IsNotFound(err) {
 			forwardingRule = nil
@@ -296,10 +326,10 @@ func (c *gceCloudImplementation) GetApiIngressStatus(cluster *kops.Cluster) ([]k
 
 	if forwardingRule != nil {
 		if forwardingRule.IPAddress == "" {
-			return nil, fmt.Errorf("Found forward rule %q, but it did not have an IPAddress", name)
+			return nil, fmt.Errorf("found forward rule %q, but it did not have an IPAddress", name)
 		}
 
-		ingresses = append(ingresses, kops.ApiIngressStatus{
+		ingresses = append(ingresses, fi.ApiIngressStatus{
 			IP: forwardingRule.IPAddress,
 		})
 	}
@@ -311,42 +341,27 @@ func (c *gceCloudImplementation) GetApiIngressStatus(cluster *kops.Cluster) ([]k
 // It matches them by looking for instance metadata with key='cluster-name' and value of our cluster name
 func FindInstanceTemplates(c GCECloud, clusterName string) ([]*compute.InstanceTemplate, error) {
 	findClusterName := strings.TrimSpace(clusterName)
-	var matches []*compute.InstanceTemplate
-	ctx := context.Background()
 
-	err := c.Compute().InstanceTemplates.List(c.Project()).Pages(ctx, func(page *compute.InstanceTemplateList) error {
-		for _, t := range page.Items {
-			match := false
-			for _, item := range t.Properties.Metadata.Items {
-				if item.Key == "cluster-name" {
-					value := fi.StringValue(item.Value)
-					if strings.TrimSpace(value) == findClusterName {
-						match = true
-					} else {
-						match = false
-						break
-					}
-				}
-			}
-
-			if !match {
-				continue
-			}
-
-			matches = append(matches, t)
-		}
-		return nil
-	})
+	ts, err := c.Compute().InstanceTemplates().List(context.Background(), c.Project())
 	if err != nil {
 		return nil, fmt.Errorf("error listing instance templates: %v", err)
+	}
+
+	var matches []*compute.InstanceTemplate
+	for _, t := range ts {
+		if !gcemetadata.MetadataMatchesClusterName(findClusterName, t.Properties.Metadata) {
+			continue
+		}
+
+		matches = append(matches, t)
 	}
 
 	return matches, nil
 }
 
 // logTokenInfo returns information about the active credential
-func (c *gceCloudImplementation) getTokenInfo(client *http.Client) (*oauth2.Tokeninfo, error) {
-	tokenSource, err := google.DefaultTokenSource(context.TODO(), compute.CloudPlatformScope)
+func (c *gceCloudImplementation) getTokenInfo(ctx context.Context) (*oauth2.Tokeninfo, error) {
+	tokenSource, err := google.DefaultTokenSource(ctx, compute.CloudPlatformScope)
 	if err != nil {
 		return nil, fmt.Errorf("error building token source: %v", err)
 	}
@@ -358,9 +373,9 @@ func (c *gceCloudImplementation) getTokenInfo(client *http.Client) (*oauth2.Toke
 
 	// Note: do not log token or any portion of it
 
-	service, err := oauth2.New(client)
+	service, err := oauth2.NewService(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("error creating oauth2 service client: %v", err)
+		return nil, fmt.Errorf("error creating oauth2 service: %v", err)
 	}
 
 	tokenInfo, err := service.Tokeninfo().AccessToken(token.AccessToken).Do()
@@ -369,4 +384,23 @@ func (c *gceCloudImplementation) getTokenInfo(client *http.Client) (*oauth2.Toke
 	}
 
 	return tokenInfo, nil
+}
+
+// SplitServiceAccountEmail splits service account email
+func SplitServiceAccountEmail(email string) (string, string, error) {
+	accountID := ""
+	projectID := ""
+
+	tokens := strings.Split(email, "@")
+	if len(tokens) == 2 {
+		accountID = tokens[0]
+		if strings.HasSuffix(tokens[1], ".iam.gserviceaccount.com") {
+			projectID = strings.TrimSuffix(tokens[1], ".iam.gserviceaccount.com")
+		}
+	}
+
+	if accountID == "" || projectID == "" {
+		return "", "", fmt.Errorf("unexpected format for ServiceAccount email %q", email)
+	}
+	return accountID, projectID, nil
 }

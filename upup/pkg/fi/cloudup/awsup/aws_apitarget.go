@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/upup/pkg/fi"
 )
@@ -50,8 +50,72 @@ func (t *AWSAPITarget) AddAWSTags(id string, expected map[string]string) error {
 	return t.Cloud.AddAWSTags(id, expected)
 }
 
+func (t *AWSAPITarget) GetTags(id string) (map[string]string, error) {
+	return t.Cloud.GetTags(id)
+}
+
+func (t *AWSAPITarget) CreateTags(id string, tags map[string]string) error {
+	return t.Cloud.CreateTags(id, tags)
+}
+
 func (t *AWSAPITarget) DeleteTags(id string, tags map[string]string) error {
 	return t.Cloud.DeleteTags(id, tags)
+}
+
+func (t *AWSAPITarget) UpdateTags(id string, tags map[string]string) error {
+	return t.Cloud.UpdateTags(id, tags)
+}
+
+func (t *AWSAPITarget) AddELBV2Tags(ResourceArn string, expected map[string]string) error {
+	actual, err := t.Cloud.GetELBV2Tags(ResourceArn)
+	if err != nil {
+		return fmt.Errorf("unexpected error fetching tags for resource: %v", err)
+	}
+
+	missing := map[string]string{}
+	for k, v := range expected {
+		actualValue, found := actual[k]
+		if found && actualValue == v {
+			continue
+		}
+		missing[k] = v
+	}
+
+	if len(missing) != 0 {
+		klog.V(4).Infof("adding tags to %q: %v", ResourceArn, missing)
+		err := t.Cloud.CreateELBV2Tags(ResourceArn, missing)
+		if err != nil {
+			return fmt.Errorf("error adding tags to ELBV2 %q: %v", ResourceArn, err)
+		}
+	}
+
+	return nil
+}
+
+func (t *AWSAPITarget) RemoveELBV2Tags(ResourceArn string, expected map[string]string) error {
+	actual, err := t.Cloud.GetELBV2Tags(ResourceArn)
+	if err != nil {
+		return fmt.Errorf("unexpected error fetching tags for resource: %v", err)
+	}
+
+	extra := map[string]string{}
+	for k, v := range actual {
+		expectedValue, found := expected[k]
+		if found && expectedValue == v {
+			continue
+		}
+		extra[k] = v
+	}
+
+	if len(extra) != 0 {
+		klog.V(4).Infof("removing tags from %q: %v", ResourceArn, extra)
+		err := t.Cloud.RemoveELBV2Tags(ResourceArn, extra)
+		if err != nil {
+			return fmt.Errorf("error removing tags from ELBV2 %q: %v", ResourceArn, err)
+		}
+	}
+
+	return nil
 }
 
 func (t *AWSAPITarget) AddELBTags(loadBalancerName string, expected map[string]string) error {

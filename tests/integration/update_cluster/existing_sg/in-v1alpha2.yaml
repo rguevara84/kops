@@ -29,12 +29,15 @@ spec:
     - instanceGroup: master-us-test-1c
       name: c
     name: events
-  kubernetesVersion: v1.14.0
+  iam: {}
+  kubelet:
+    anonymousAuth: false
+  kubernetesVersion: v1.21.0
   masterInternalName: api.internal.existingsg.example.com
   masterPublicName: api.existingsg.example.com
   networkCIDR: 172.20.0.0/16
   networking:
-    kubenet: {}
+    cni: {}
   nonMasqueradeCIDR: 100.64.0.0/10
   sshAccess:
     - 0.0.0.0/0
@@ -132,4 +135,3 @@ spec:
   subnets:
   - us-test-1a
   securityGroupOverride: sg-nodes
-

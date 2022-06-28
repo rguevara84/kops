@@ -1,46 +1,41 @@
-# Kops Releases & Versioning
 
-kops is intended to be backward compatible.  It is always recommended to use the
-latest version of kops with whatever version of Kubernetes you are using.  We suggest
-kops users run one of the [3 minor versions](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/release/versioning.md#supported-releases-and-component-skew) Kubernetes is supporting however we
-do our best to support previous releases for a period of time.
+# kOps Releases & Versioning
 
-One exception, in regard to compatibility, kops supports the equivalent
-Kubernetes minor release number.  A minor version is the second digit in the
-release number.  kops version 1.13.0 has a minor version of 13. The numbering
-follows the semantic versioning specification, MAJOR.MINOR.PATCH.
+kOps intends to be backward compatible.  It is always recommended using the
+latest version of kOps with whatever version of Kubernetes you are using.  We suggest
+kOps users run one of the [3 minor versions](https://kubernetes.io/releases/version-skew-policy/#supported-versions) Kubernetes is supporting however we
+do our best to support previous releases for some period.
 
-For example, kops 1.12.0 does not support Kubernetes 1.13.0, but kops 1.13.0
-supports Kubernetes 1.12.2 and previous Kubernetes versions. Only when the kops minor
-version matches the Kubernetes minor version does kops officially support the
-Kubernetes release.  kops does not stop a user from installing mismatching
-versions of K8s, but Kubernetes releases always require kops to install specific
-versions of components like docker, that tested against the particular
-Kubernetes version.
-
+kOps does not, however, support Kubernetes releases that have either a greater major
+release number or greater minor release number than it.
+(The numbers before the first and second dots are the major and minor release numbers, respectively.)
+For example, kOps 1.20.0 does not support Kubernetes 1.21.0, but does
+support Kubernetes 1.20.5, 1.19.2, and several previous Kubernetes versions.
 
 ## Compatibility Matrix
 
-| kops version  | k8s 1.9.x | k8s 1.10.x | k8s 1.11.x | k8s 1.12.x | k8s 1.13.x | k8s 1.14.x |
-|---------------|-----------|------------|------------|------------|------------|------------|
-| 1.14.x - Beta | ✔         | ✔          | ✔          | ✔          | ✔          | ✔          |
-| 1.13.x        | ✔         | ✔          | ✔          | ✔          | ✔          | ❌         |
-| 1.12.x        | ✔         | ✔          | ✔          | ✔          | ❌         | ❌         |
-| 1.11.x        | ✔         | ✔          | ✔          | ❌         | ❌         | ❌         |
-| ~~1.10.x~~    | ✔         | ✔          | ❌         | ❌         | ❌         | ❌         |
-| ~~1.9.x~~     | ✔         | ❌         | ❌         | ❌         | ❌         | ❌         |
+| kOps version  | k8s 1.19.x | k8s 1.20.x | k8s 1.21.x | k8s 1.22.x | k8s 1.23.x |
+|---------------|------------|------------|------------|------------|------------|
+| 1.23.x        | ✔          | ✔          | ✔          | ✔          | ✔          |
+| 1.22.x        | ✔          | ✔          | ✔          | ✔          | ⚫         |
+| ~~1.21.x~~    | ✔          | ✔          | ✔          | ⚫         | ⚫         |
+| ~~1.20.x~~    | ✔          | ✔          | ⚫         | ⚫         | ⚫         |
+| ~~1.19.x~~    | ✔          | ⚫         | ⚫         | ⚫         | ⚫         |
 
-Use the latest version of kops for all releases of Kubernetes, with the caveat
-that higher versions of Kubernetes are not _officially_ supported by kops. Releases who are ~~crossed out~~ _should_ work but we suggest should be upgraded soon.
+
+Use the latest version of kOps for all releases of Kubernetes, with the caveat
+that higher versions of Kubernetes are not _officially_ supported by kOps.
+Releases which are ~~crossed out~~ _should_ work, but are unlikely to get security or other fixes.
+We suggest they be upgraded soon.
 
 ## Release Schedule
 
-This project does not follow the Kubernetes release schedule.  `kops` aims to
-provide a reliable installation experience for kubernetes, and typically
+This project does not follow the Kubernetes release schedule. kOps aims to
+provide a reliable installation experience for Kubernetes, and typically
 releases about a month after the corresponding Kubernetes release. This time
 allows for the Kubernetes project to resolve any issues introduced by the new
-version and ensures that we can support the latest features. kops will release
+version and ensures that we can support the latest features. kOps will release
 alpha and beta pre-releases for people that are eager to try the latest
-Kubernetes release.  Please only use pre-GA kops releases in environments that
+Kubernetes release.  Please only use pre-GA kOps releases in environments that
 can tolerate the quirks of new releases, and please do report any issues
 encountered.

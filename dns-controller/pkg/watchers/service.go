@@ -17,18 +17,19 @@ limitations under the License.
 package watchers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
-
-	"k8s.io/kops/dns-controller/pkg/dns"
-	"k8s.io/kops/dns-controller/pkg/util"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/dns-controller/pkg/dns"
+	"k8s.io/kops/dns-controller/pkg/util"
+	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
 // ServiceController watches for services with dns annotations
@@ -67,11 +68,13 @@ func (c *ServiceController) Run() {
 
 func (c *ServiceController) runWatcher(stopCh <-chan struct{}) {
 	runOnce := func() (bool, error) {
+		ctx := context.TODO()
+
 		var listOpts metav1.ListOptions
 		klog.V(4).Infof("querying without label filter")
 
 		allKeys := c.scope.AllKeys()
-		serviceList, err := c.client.CoreV1().Services(c.namespace).List(listOpts)
+		serviceList, err := c.client.CoreV1().Services(c.namespace).List(ctx, listOpts)
 		if err != nil {
 			return false, fmt.Errorf("error listing services: %v", err)
 		}
@@ -93,7 +96,7 @@ func (c *ServiceController) runWatcher(stopCh <-chan struct{}) {
 
 		listOpts.Watch = true
 		listOpts.ResourceVersion = serviceList.ResourceVersion
-		watcher, err := c.client.CoreV1().Services(c.namespace).Watch(listOpts)
+		watcher, err := c.client.CoreV1().Services(c.namespace).Watch(ctx, listOpts)
 		if err != nil {
 			return false, fmt.Errorf("error watching services: %v", err)
 		}
@@ -161,8 +164,12 @@ func (c *ServiceController) updateServiceRecords(service *v1.Service) string {
 					klog.V(4).Infof("Found CNAME record for service %s/%s: %q", service.Namespace, service.Name, ingress.Hostname)
 				}
 				if ingress.IP != "" {
+					var recordType dns.RecordType = dns.RecordTypeA
+					if utils.IsIPv6IP(ingress.IP) {
+						recordType = dns.RecordTypeAAAA
+					}
 					ingresses = append(ingresses, dns.Record{
-						RecordType: dns.RecordTypeA,
+						RecordType: recordType,
 						Value:      ingress.IP,
 					})
 					klog.V(4).Infof("Found A record for service %s/%s: %q", service.Namespace, service.Name, ingress.IP)
@@ -203,8 +210,7 @@ func (c *ServiceController) updateServiceRecords(service *v1.Service) string {
 
 			fqdn := dns.EnsureDotSuffix(token)
 			for _, ingress := range ingresses {
-				var r dns.Record
-				r = ingress
+				r := ingress
 				r.FQDN = fqdn
 				records = append(records, r)
 			}

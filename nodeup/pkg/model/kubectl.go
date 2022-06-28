@@ -19,11 +19,11 @@ package model
 import (
 	"fmt"
 
-	"k8s.io/kops/nodeup/pkg/distros"
+	"k8s.io/kops/pkg/rbac"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // KubectlBuilder install kubectl
@@ -35,7 +35,7 @@ var _ fi.ModelBuilder = &KubectlBuilder{}
 
 // Build is responsible for managing the kubectl on the nodes
 func (b *KubectlBuilder) Build(c *fi.ModelBuilderContext) error {
-	if !b.IsMaster {
+	if !b.HasAPIServer {
 		return nil
 	}
 
@@ -60,14 +60,15 @@ func (b *KubectlBuilder) Build(c *fi.ModelBuilderContext) error {
 	}
 
 	{
-		kubeconfig, err := b.BuildPKIKubeconfig("kubecfg")
-		if err != nil {
-			return err
+		name := nodetasks.PKIXName{
+			CommonName:   "kubecfg",
+			Organization: []string{rbac.SystemPrivilegedGroup},
 		}
+		kubeconfig := b.BuildIssuedKubeconfig("kubecfg", name, c)
 
 		c.AddTask(&nodetasks.File{
 			Path:     "/var/lib/kubectl/kubeconfig",
-			Contents: fi.NewStringResource(kubeconfig),
+			Contents: kubeconfig,
 			Type:     nodetasks.FileType_File,
 			Mode:     s("0400"),
 		})
@@ -88,7 +89,7 @@ func (b *KubectlBuilder) Build(c *fi.ModelBuilderContext) error {
 
 			c.AddTask(&nodetasks.File{
 				Path:     adminUser.Home + "/.kube/config",
-				Contents: fi.NewStringResource(kubeconfig),
+				Contents: kubeconfig,
 				Type:     nodetasks.FileType_File,
 				Mode:     s("0400"),
 				Owner:    s(adminUser.Name),
@@ -102,14 +103,9 @@ func (b *KubectlBuilder) Build(c *fi.ModelBuilderContext) error {
 
 // findKubeconfigUser finds the default user for whom we should create a kubeconfig
 func (b *KubectlBuilder) findKubeconfigUser() (*fi.User, *fi.Group, error) {
-	var users []string
-	switch b.Distribution {
-	case distros.DistributionJessie, distros.DistributionDebian9, distros.DistributionDebian10:
-		users = []string{"admin", "root"}
-	case distros.DistributionCentos7:
-		users = []string{"centos"}
-	default:
-		klog.Warningf("Unknown distro; won't write kubeconfig to homedir %s", b.Distribution)
+	users, err := b.Distribution.DefaultUsers()
+	if err != nil {
+		klog.Warningf("won't write kubeconfig to homedir for distribution %s: %v", b.Distribution, err)
 		return nil, nil, nil
 	}
 
@@ -122,7 +118,7 @@ func (b *KubectlBuilder) findKubeconfigUser() (*fi.User, *fi.Group, error) {
 		if user == nil {
 			continue
 		}
-		group, err := fi.LookupGroupById(user.Gid)
+		group, err := fi.LookupGroupByID(user.Gid)
 		if err != nil {
 			klog.Warningf("unable to find group %d for user %q", user.Gid, s)
 			continue

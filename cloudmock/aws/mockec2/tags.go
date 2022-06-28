@@ -24,13 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
-)
-
-const (
-	// Not (yet?) in aws-sdk-go
-	ResourceTypeNatGateway = "nat-gateway"
-	ResourceTypeAddress    = "elastic-ip"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) CreateTagsRequest(*ec2.CreateTagsInput) (*request.Request, *ec2.CreateTagsOutput) {
@@ -49,15 +43,13 @@ func (m *MockEC2) CreateTags(request *ec2.CreateTagsInput) (*ec2.CreateTagsOutpu
 
 	for _, v := range request.Resources {
 		resourceId := *v
-		for _, tag := range request.Tags {
-			m.addTag(resourceId, tag)
-		}
+		m.addTags(resourceId, request.Tags...)
 	}
 	response := &ec2.CreateTagsOutput{}
 	return response, nil
 }
 
-func (m *MockEC2) addTag(resourceId string, tag *ec2.Tag) {
+func (m *MockEC2) addTags(resourceId string, tags ...*ec2.Tag) {
 	resourceType := ""
 	if strings.HasPrefix(resourceId, "subnet-") {
 		resourceType = ec2.ResourceTypeSubnet
@@ -69,25 +61,32 @@ func (m *MockEC2) addTag(resourceId string, tag *ec2.Tag) {
 		resourceType = ec2.ResourceTypeVolume
 	} else if strings.HasPrefix(resourceId, "igw-") {
 		resourceType = ec2.ResourceTypeInternetGateway
+	} else if strings.HasPrefix(resourceId, "eigw-") {
+		resourceType = ec2.ResourceTypeEgressOnlyInternetGateway
 	} else if strings.HasPrefix(resourceId, "nat-") {
-		resourceType = ResourceTypeNatGateway
+		resourceType = ec2.ResourceTypeNatgateway
 	} else if strings.HasPrefix(resourceId, "dopt-") {
 		resourceType = ec2.ResourceTypeDhcpOptions
 	} else if strings.HasPrefix(resourceId, "rtb-") {
 		resourceType = ec2.ResourceTypeRouteTable
 	} else if strings.HasPrefix(resourceId, "eipalloc-") {
-		resourceType = ResourceTypeAddress
+		resourceType = ec2.ResourceTypeElasticIp
+	} else if strings.HasPrefix(resourceId, "lt-") {
+		resourceType = ec2.ResourceTypeLaunchTemplate
+	} else if strings.HasPrefix(resourceId, "key-") {
+		resourceType = ec2.ResourceTypeKeyPair
 	} else {
 		klog.Fatalf("Unknown resource-type in create tags: %v", resourceId)
 	}
-
-	t := &ec2.TagDescription{
-		Key:          tag.Key,
-		Value:        tag.Value,
-		ResourceId:   s(resourceId),
-		ResourceType: s(resourceType),
+	for _, tag := range tags {
+		t := &ec2.TagDescription{
+			Key:          tag.Key,
+			Value:        tag.Value,
+			ResourceId:   s(resourceId),
+			ResourceType: s(resourceType),
+		}
+		m.Tags = append(m.Tags, t)
 	}
-	m.Tags = append(m.Tags, t)
 }
 
 func (m *MockEC2) DescribeTagsRequest(*ec2.DescribeTagsInput) (*request.Request, *ec2.DescribeTagsOutput) {
@@ -210,9 +209,11 @@ func (m *MockEC2) DescribeTags(request *ec2.DescribeTagsInput) (*ec2.DescribeTag
 
 	return response, nil
 }
+
 func (m *MockEC2) DescribeTagsPages(*ec2.DescribeTagsInput, func(*ec2.DescribeTagsOutput, bool) bool) error {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeTagsPagesWithContext(aws.Context, *ec2.DescribeTagsInput, func(*ec2.DescribeTagsOutput, bool) bool, ...request.Option) error {
 	panic("Not implemented")
 }
@@ -226,4 +227,15 @@ func SortTags(tags []*ec2.Tag) {
 		}
 	}
 	sort.SliceStable(tags, func(i, j int) bool { return keys[i] < keys[j] })
+}
+
+func tagSpecificationsToTags(specifications []*ec2.TagSpecification, resourceType string) []*ec2.Tag {
+	tags := make([]*ec2.Tag, 0)
+	for _, specification := range specifications {
+		if aws.StringValue(specification.ResourceType) != resourceType {
+			continue
+		}
+		tags = append(tags, specification.Tags...)
+	}
+	return tags
 }

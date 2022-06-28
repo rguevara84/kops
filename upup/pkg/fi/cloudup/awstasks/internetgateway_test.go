@@ -81,18 +81,20 @@ func TestSharedInternetGatewayDoesNotRename(t *testing.T) {
 	// We define a function so we can rebuild the tasks, because we modify in-place when running
 	buildTasks := func() map[string]fi.Task {
 		vpc1 := &VPC{
-			Name:   s("vpc1"),
-			CIDR:   s("172.20.0.0/16"),
-			Tags:   map[string]string{"kubernetes.io/cluster/cluster.example.com": "shared"},
-			Shared: fi.Bool(true),
-			ID:     vpc.Vpc.VpcId,
+			Name:      s("vpc1"),
+			Lifecycle: fi.LifecycleSync,
+			CIDR:      s("172.20.0.0/16"),
+			Tags:      map[string]string{"kubernetes.io/cluster/cluster.example.com": "shared"},
+			Shared:    fi.Bool(true),
+			ID:        vpc.Vpc.VpcId,
 		}
 		igw1 := &InternetGateway{
-			Name:   s("igw1"),
-			VPC:    vpc1,
-			Shared: fi.Bool(true),
-			ID:     internetGateway.InternetGateway.InternetGatewayId,
-			Tags:   make(map[string]string),
+			Name:      s("igw1"),
+			Lifecycle: fi.LifecycleSync,
+			VPC:       vpc1,
+			Shared:    fi.Bool(true),
+			ID:        internetGateway.InternetGateway.InternetGatewayId,
+			Tags:      make(map[string]string),
 		}
 
 		return map[string]fi.Task{
@@ -113,6 +115,7 @@ func TestSharedInternetGatewayDoesNotRename(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error building context: %v", err)
 		}
+		defer context.Close()
 
 		if err := context.RunTasks(testRunTasksOptions); err != nil {
 			t.Fatalf("unexpected error during Run: %v", err)

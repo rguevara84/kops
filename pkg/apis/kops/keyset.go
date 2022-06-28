@@ -55,6 +55,10 @@ type KeysetItem struct {
 	// Id is the unique identifier for this key in the keyset
 	Id string `json:"id,omitempty"`
 
+	// DistrustTimestamp is RFC 3339 date and time at which this keypair was distrusted.
+	// If not set, keypair is trusted or is not a keypair.
+	DistrustTimestamp *metav1.Time `json:"distrustTimestamp,omitempty"`
+
 	// PublicMaterial holds non-secret material (e.g. a certificate)
 	PublicMaterial []byte `json:"publicMaterial,omitempty"`
 
@@ -66,6 +70,9 @@ type KeysetItem struct {
 type KeysetSpec struct {
 	// Type is the type of the Keyset (PKI keypair, or secret token)
 	Type KeysetType `json:"type,omitempty"`
+
+	// PrimaryID is the id of the key used to make new signatures.
+	PrimaryID string `json:"primaryID,omitempty"`
 
 	// Keys is the set of keys that make up the keyset
 	Keys []KeysetItem `json:"keys,omitempty"`

@@ -17,14 +17,15 @@ limitations under the License.
 package vfs
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"sync"
+	"syscall"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/try"
 	"k8s.io/kops/util/pkg/hashing"
 )
@@ -33,8 +34,10 @@ type FSPath struct {
 	location string
 }
 
-var _ Path = &FSPath{}
-var _ HasHash = &FSPath{}
+var (
+	_ Path    = &FSPath{}
+	_ HasHash = &FSPath{}
+)
 
 func NewFSPath(location string) *FSPath {
 	return &FSPath{location: location}
@@ -49,12 +52,12 @@ func (p *FSPath) Join(relativePath ...string) Path {
 
 func (p *FSPath) WriteFile(data io.ReadSeeker, acl ACL) error {
 	dir := path.Dir(p.location)
-	err := os.MkdirAll(dir, 0755)
+	err := os.MkdirAll(dir, 0o755)
 	if err != nil {
 		return fmt.Errorf("error creating directories %q: %v", dir, err)
 	}
 
-	f, err := ioutil.TempFile(dir, "tmp")
+	f, err := os.CreateTemp(dir, "tmp")
 	if err != nil {
 		return fmt.Errorf("error creating temp file in %q: %v", dir, err)
 	}
@@ -112,7 +115,11 @@ func (p *FSPath) CreateFile(data io.ReadSeeker, acl ACL) error {
 
 // ReadFile implements Path::ReadFile
 func (p *FSPath) ReadFile() ([]byte, error) {
-	return ioutil.ReadFile(p.location)
+	file, err := os.ReadFile(p.location)
+	if errors.Is(err, syscall.ENOENT) {
+		err = os.ErrNotExist
+	}
+	return file, err
 }
 
 // WriteTo implements io.WriterTo
@@ -127,7 +134,7 @@ func (p *FSPath) WriteTo(out io.Writer) (int64, error) {
 }
 
 func (p *FSPath) ReadDir() ([]Path, error) {
-	files, err := ioutil.ReadDir(p.location)
+	files, err := os.ReadDir(p.location)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, err
@@ -153,7 +160,7 @@ func (p *FSPath) ReadTree() ([]Path, error) {
 // readTree recursively finds files and adds them to dest
 // It excludes directories.
 func readTree(base string, dest *[]Path) error {
-	files, err := ioutil.ReadDir(base)
+	files, err := os.ReadDir(base)
 	if err != nil {
 		return err
 	}
@@ -185,6 +192,10 @@ func (p *FSPath) String() string {
 
 func (p *FSPath) Remove() error {
 	return os.Remove(p.location)
+}
+
+func (p *FSPath) RemoveAllVersions() error {
+	return p.Remove()
 }
 
 func (p *FSPath) PreferredHash() (*hashing.Hash, error) {

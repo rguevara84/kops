@@ -25,12 +25,10 @@ import (
 	"strings"
 	"syscall"
 
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
-	"k8s.io/kops/upup/pkg/fi/utils"
-
-	"k8s.io/klog"
 )
 
 const (
@@ -38,12 +36,13 @@ const (
 	FileType_Symlink = "symlink"
 	// FileType_Directory defines a directory
 	FileType_Directory = "directory"
-	// FileType_File is a regualar file
+	// FileType_File is a regular file
 	FileType_File = "file"
 )
 
 type File struct {
-	AfterFiles      []string    `json:"afterfiles,omitempty"`
+	AfterFiles      []string    `json:"afterFiles,omitempty"`
+	BeforeServices  []string    `json:"beforeServices,omitempty"`
 	Contents        fi.Resource `json:"contents,omitempty"`
 	Group           *string     `json:"group,omitempty"`
 	IfNotExists     bool        `json:"ifNotExists,omitempty"`
@@ -55,57 +54,32 @@ type File struct {
 	Type            string      `json:"type"`
 }
 
-var _ fi.Task = &File{}
-var _ fi.HasDependencies = &File{}
-var _ fi.HasName = &File{}
-
-func NewFileTask(name string, src fi.Resource, destPath string, meta string) (*File, error) {
-	f := &File{
-		//Name:     name,
-		Contents: src,
-		Path:     destPath,
-	}
-
-	if meta != "" {
-		err := utils.YamlUnmarshal([]byte(meta), f)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing meta for file %q: %v", name, err)
-		}
-	}
-
-	if f.Symlink != nil && f.Type == "" {
-		f.Type = FileType_Symlink
-	}
-
-	return f, nil
-}
-
-var _ fi.HasDependencies = &File{}
+var (
+	_ fi.Task            = &File{}
+	_ fi.HasDependencies = &File{}
+	_ fi.HasName         = &File{}
+)
 
 // GetDependencies implements HasDependencies::GetDependencies
 func (e *File) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 	var deps []fi.Task
+
 	if e.Owner != nil {
-		ownerTask := tasks["user/"+*e.Owner]
+		ownerTask := tasks["UserTask/"+*e.Owner]
 		if ownerTask == nil {
 			// The user might be a pre-existing user (e.g. admin)
-			klog.Warningf("Unable to find task %q", "user/"+*e.Owner)
+			klog.Warningf("Unable to find task %q", "UserTask/"+*e.Owner)
 		} else {
 			deps = append(deps, ownerTask)
 		}
 	}
 
-	// Depend on disk mounts
-	// For simplicity, we just depend on _all_ disk mounts
-	// We could check the mountpath, but that feels excessive...
-	for _, v := range tasks {
-		if _, ok := v.(*MountDiskTask); ok {
-			deps = append(deps, v)
-		}
-	}
-
 	// Requires parent directories to be created
 	deps = append(deps, findCreatesDirParents(e.Path, tasks)...)
+
+	if hasDep, ok := e.Contents.(fi.HasDependencies); ok {
+		deps = append(deps, hasDep.GetDependencies(tasks)...)
+	}
 
 	// Requires other files to be created first
 	for _, f := range e.AfterFiles {
@@ -125,10 +99,6 @@ var _ fi.HasName = &File{}
 
 func (f *File) GetName() *string {
 	return &f.Path
-}
-
-func (f *File) SetName(name string) {
-	klog.Fatalf("SetName not supported for File task")
 }
 
 func (f *File) String() string {
@@ -158,7 +128,7 @@ func findFile(p string) (*File, error) {
 	actual.Mode = fi.String(fi.FileModeToString(stat.Mode() & os.ModePerm))
 
 	uid := int(stat.Sys().(*syscall.Stat_t).Uid)
-	owner, err := fi.LookupUserById(uid)
+	owner, err := fi.LookupUserByID(uid)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +139,7 @@ func findFile(p string) (*File, error) {
 	}
 
 	gid := int(stat.Sys().(*syscall.Stat_t).Gid)
-	group, err := fi.LookupGroupById(gid)
+	group, err := fi.LookupGroupByID(gid)
 	if err != nil {
 		return nil, err
 	}
@@ -225,8 +195,8 @@ func (s *File) CheckChanges(a, e, changes *File) error {
 }
 
 func (_ *File) RenderLocal(t *local.LocalTarget, a, e, changes *File) error {
-	dirMode := os.FileMode(0755)
-	fileMode, err := fi.ParseFileMode(fi.StringValue(e.Mode), 0644)
+	dirMode := os.FileMode(0o755)
+	fileMode, err := fi.ParseFileMode(fi.StringValue(e.Mode), 0o644)
 	if err != nil {
 		return fmt.Errorf("invalid file mode for %q: %q", e.Path, fi.StringValue(e.Mode))
 	}
@@ -266,7 +236,7 @@ func (_ *File) RenderLocal(t *local.LocalTarget, a, e, changes *File) error {
 		}
 	} else if e.Type == FileType_File {
 		if changes.Contents != nil {
-			err = fi.WriteFile(e.Path, e.Contents, fileMode, dirMode)
+			err = fi.WriteFile(e.Path, e.Contents, fileMode, dirMode, fi.StringValue(e.Owner), fi.StringValue(e.Group))
 			if err != nil {
 				return fmt.Errorf("error copying file %q: %v", e.Path, err)
 			}
@@ -310,8 +280,8 @@ func (_ *File) RenderLocal(t *local.LocalTarget, a, e, changes *File) error {
 }
 
 func (_ *File) RenderCloudInit(t *cloudinit.CloudInitTarget, a, e, changes *File) error {
-	dirMode := os.FileMode(0755)
-	fileMode, err := fi.ParseFileMode(fi.StringValue(e.Mode), 0644)
+	dirMode := os.FileMode(0o755)
+	fileMode, err := fi.ParseFileMode(fi.StringValue(e.Mode), 0o644)
 	if err != nil {
 		return fmt.Errorf("invalid file mode for %s: %q", e.Path, *e.Mode)
 	}
@@ -337,7 +307,7 @@ func (_ *File) RenderCloudInit(t *cloudinit.CloudInitTarget, a, e, changes *File
 
 	if e.OnChangeExecute != nil {
 		return fmt.Errorf("OnChangeExecute not supported with CloudInit")
-		//t.AddCommand(cloudinit.Always, e.OnChangeExecute...)
+		// t.AddCommand(cloudinit.Always, e.OnChangeExecute...)
 	}
 
 	return nil

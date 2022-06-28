@@ -32,7 +32,9 @@ type MockIAM struct {
 	mutex            sync.Mutex
 	InstanceProfiles map[string]*iam.InstanceProfile
 	Roles            map[string]*iam.Role
+	OIDCProviders    map[string]*iam.GetOpenIDConnectProviderOutput
 	RolePolicies     []*rolePolicy
+	AttachedPolicies map[string][]*iam.AttachedPolicy
 }
 
 var _ iamiface.IAMAPI = &MockIAM{}

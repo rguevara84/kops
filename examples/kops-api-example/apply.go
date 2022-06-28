@@ -17,15 +17,16 @@ limitations under the License.
 package main
 
 import (
+	"context"
+
 	"k8s.io/kops/pkg/client/simple/vfsclientset"
 	"k8s.io/kops/upup/pkg/fi/cloudup"
 )
 
-func apply() error {
-	allowList := true
-	clientset := vfsclientset.NewVFSClientset(registryBase, allowList)
+func apply(ctx context.Context) error {
+	clientset := vfsclientset.NewVFSClientset(registryBase)
 
-	cluster, err := clientset.GetCluster(clusterName)
+	cluster, err := clientset.GetCluster(ctx, clusterName)
 	if err != nil {
 		return err
 	}
@@ -35,7 +36,7 @@ func apply() error {
 		Clientset:  clientset,
 		TargetName: cloudup.TargetDirect,
 	}
-	err = applyCmd.Run()
+	err = applyCmd.Run(ctx)
 	if err != nil {
 		return err
 	}

@@ -42,6 +42,7 @@ func BuildSystemComponentEnvVars(spec *kops.ClusterSpec) EnvVars {
 	}
 
 	// Custom S3 endpoint
+	vars.addEnvVariableIfExist("S3_REGION")
 	vars.addEnvVariableIfExist("S3_ENDPOINT")
 	vars.addEnvVariableIfExist("S3_ACCESS_KEY_ID")
 	vars.addEnvVariableIfExist("S3_SECRET_ACCESS_KEY")
@@ -59,9 +60,17 @@ func BuildSystemComponentEnvVars(spec *kops.ClusterSpec) EnvVars {
 	vars.addEnvVariableIfExist("OS_PASSWORD")
 	vars.addEnvVariableIfExist("OS_AUTH_URL")
 	vars.addEnvVariableIfExist("OS_REGION_NAME")
+	vars.addEnvVariableIfExist("OS_APPLICATION_CREDENTIAL_ID")
+	vars.addEnvVariableIfExist("OS_APPLICATION_CREDENTIAL_SECRET")
 
 	// Digital Ocean related values.
 	vars.addEnvVariableIfExist("DIGITALOCEAN_ACCESS_TOKEN")
+
+	// Hetzner Cloud related values.
+	vars.addEnvVariableIfExist("HCLOUD_TOKEN")
+
+	// Azure related values.
+	vars.addEnvVariableIfExist("AZURE_STORAGE_ACCOUNT")
 
 	return vars
 }

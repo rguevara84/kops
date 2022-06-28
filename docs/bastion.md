@@ -1,4 +1,4 @@
-# Bastion in Kops
+# Bastion in kOps
 
 Bastion provide an external facing point of entry into a network containing private network instances. This host can provide a single point of fortification or audit and can be started and stopped to enable or disable inbound SSH communication from the Internet, some call bastion as the "jump server".
 
@@ -34,7 +34,6 @@ You should now be able to edit and configure your bastion instance group.
 apiVersion: kops.k8s.io/v1alpha2
 kind: InstanceGroup
 metadata:
-  creationTimestamp: "2017-01-05T13:37:07Z"
   name: bastions
 spec:
   associatePublicIp: true
@@ -73,6 +72,47 @@ spec:
       bastionPublicName: bastion.mycluster.example.com
 ```
 
+### Using an internal (VPC only) load balancer 
+{{ kops_feature_table(kops_added_default='1.22') }}
+
+When configuring a LoadBalancer, you can also choose to have a public load balancer or an internal (VPC only) load balancer. The `type` field should be `Public` or `Internal` (defaults to `Public` if omitted).
+
+```yaml
+spec:
+  topology:
+    bastion:
+      loadBalancer:
+        type: "Internal"
+```
+
+### Additional security groups to ELB
+{{ kops_feature_table(kops_added_default='1.18') }}
+
+If you want to add security groups to the bastion ELB
+
+```yaml
+spec:
+  topology:
+    bastion:
+      bastionPublicName: bastion.mycluster.example.com
+      loadBalancer:
+        additionalSecurityGroups:
+        - "sg-***"
+```
+
+### Access when using gossip
+
+When using [gossip mode](gossip.md), there is no DNS zone where we can configure a
+CNAME for the bastion. Because bastions are fronted with a load
+balancer, you can instead use the endpoint of the load balancer to
+reach your bastion.
+
+On AWS, an easy way to find this DNS name is with kops toolbox:
+
+```
+kops toolbox dump -ojson | grep 'bastion.*elb.amazonaws.com'
+```
+
 ### Using SSH agent to access your bastion
 
 Verify your local agent is configured correctly
@@ -99,7 +139,7 @@ ssh admin@<master_ip>
 
 ### Changing your ELB idle timeout
 
-The bastion is accessed via an AWS ELB. The ELB is required to gain secure access into the private network and connect the user to the ASG that the bastion lives in. Kops will by default set the bastion ELB idle timeout to 5 minutes. This is important for SSH connections to the bastion that you plan to keep open.
+The bastion is accessed via an AWS ELB. The ELB is required to gain secure access into the private network and connect the user to the ASG that the bastion lives in. kOps will by default set the bastion ELB idle timeout to 5 minutes. This is important for SSH connections to the bastion that you plan to keep open.
 
 You can increase the ELB idle timeout by editing the main cluster config `kops edit cluster $NAME` and modifying the following block
 

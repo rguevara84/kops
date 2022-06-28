@@ -18,12 +18,11 @@ package mesh
 
 import (
 	"github.com/weaveworks/mesh"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // glogLogger sends mesh log messages to glog
-type glogLogger struct {
-}
+type glogLogger struct{}
 
 var _ mesh.Logger = &glogLogger{}
 

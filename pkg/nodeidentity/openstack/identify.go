@@ -26,6 +26,7 @@ import (
 	"github.com/gophercloud/gophercloud/openstack"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/nodeidentity"
 )
 
@@ -34,8 +35,8 @@ type nodeIdentifier struct {
 	novaClient *gophercloud.ServiceClient
 }
 
-// New creates and returns a nodeidentity.Identifier for Nodes running on OpenStack
-func New() (nodeidentity.Identifier, error) {
+// New creates and returns a nodeidentity.LegacyIdentifier for Nodes running on OpenStack
+func New() (nodeidentity.LegacyIdentifier, error) {
 	env, err := openstack.AuthOptionsFromEnv()
 	if err != nil {
 		return nil, err
@@ -43,13 +44,20 @@ func New() (nodeidentity.Identifier, error) {
 
 	region := os.Getenv("OS_REGION_NAME")
 	if region == "" {
-		return nil, fmt.Errorf("Unable to find region")
+		return nil, fmt.Errorf("unable to find region")
 	}
 
 	provider, err := openstack.NewClient(env.IdentityEndpoint)
 	if err != nil {
 		return nil, err
 	}
+	ua := gophercloud.UserAgent{}
+	ua.Prepend("kops/nodeidentity")
+	provider.UserAgent = ua
+	klog.V(4).Infof("Using user-agent %s", ua.Join())
+
+	// node-controller should be able to renew it tokens against OpenStack API
+	env.AllowReauth = true
 
 	err = openstack.Authenticate(provider, env)
 	if err != nil {
@@ -70,7 +78,7 @@ func New() (nodeidentity.Identifier, error) {
 }
 
 // IdentifyNode queries OpenStack for the node identity information
-func (i *nodeIdentifier) IdentifyNode(ctx context.Context, node *corev1.Node) (*nodeidentity.Info, error) {
+func (i *nodeIdentifier) IdentifyNode(ctx context.Context, node *corev1.Node) (*nodeidentity.LegacyInfo, error) {
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
 		return nil, fmt.Errorf("providerID was not set for node %s", node.Name)
@@ -82,16 +90,15 @@ func (i *nodeIdentifier) IdentifyNode(ctx context.Context, node *corev1.Node) (*
 	instanceID := strings.TrimPrefix(providerID, "openstack://")
 	// instanceid looks like its openstack:/// but no idea is that really correct like that?
 	// this supports now both openstack:// and openstack:/// format
-	if strings.HasPrefix(instanceID, "/") {
-		instanceID = strings.TrimPrefix(instanceID, "/")
-	}
+
+	instanceID = strings.TrimPrefix(instanceID, "/")
 
 	kopsGroup, err := i.getInstanceGroup(instanceID)
 	if err != nil {
 		return nil, err
 	}
 
-	info := &nodeidentity.Info{}
+	info := &nodeidentity.LegacyInfo{}
 	info.InstanceGroup = kopsGroup
 
 	return info, nil
@@ -106,5 +113,5 @@ func (i *nodeIdentifier) getInstanceGroup(instanceID string) (string, error) {
 	if val, ok := instance.Metadata["KopsInstanceGroup"]; ok {
 		return val, nil
 	}
-	return "", fmt.Errorf("Could not find tag 'KopsInstanceGroup' from instance metadata")
+	return "", fmt.Errorf("could not find tag 'KopsInstanceGroup' from instance metadata")
 }

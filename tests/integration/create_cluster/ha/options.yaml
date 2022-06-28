@@ -7,5 +7,6 @@ MasterZones:
 - us-test-1a
 - us-test-1b
 - us-test-1c
-Cloud: aws
-KubernetesVersion: v1.6.0-alpha.3
+CloudProvider: aws
+Networking: cni
+KubernetesVersion: v1.21.0

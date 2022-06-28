@@ -38,7 +38,7 @@ import (
 	"github.com/gophercloud/gophercloud/pagination"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/homedir"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/util/pkg/hashing"
 )
 
@@ -55,6 +55,10 @@ func NewSwiftClient() (*gophercloud.ServiceClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error building openstack provider client: %v", err)
 	}
+	ua := gophercloud.UserAgent{}
+	ua.Prepend("kops/swift")
+	pc.UserAgent = ua
+	klog.V(4).Infof("Using user-agent %s", ua.Join())
 
 	tlsconfig := &tls.Config{}
 	tlsconfig.InsecureSkipVerify = true
@@ -91,10 +95,9 @@ func NewSwiftClient() (*gophercloud.ServiceClient, error) {
 	return client, nil
 }
 
-type OpenstackConfig struct {
-}
+type OpenstackConfig struct{}
 
-func (_ OpenstackConfig) filename() (string, error) {
+func (OpenstackConfig) filename() (string, error) {
 	name := os.Getenv("OPENSTACK_CREDENTIAL_FILE")
 	if name != "" {
 		klog.V(2).Infof("using openstack config found in $OPENSTACK_CREDENTIAL_FILE: %s", name)
@@ -131,20 +134,22 @@ func (oc OpenstackConfig) getSection(name string, items []string) (map[string]st
 }
 
 func (oc OpenstackConfig) GetCredential() (gophercloud.AuthOptions, error) {
-
 	// prioritize environment config
 	env, enverr := openstack.AuthOptionsFromEnv()
 	if enverr != nil {
-		klog.Warningf("Could not initialize swift from environment: %v", enverr)
+		klog.Warningf("Could not initialize OpenStack config from environment: %v", enverr)
 		// fallback to config file
 		return oc.getCredentialFromFile()
 	}
-	return env, nil
 
+	if env.ApplicationCredentialID != "" && env.Username == "" {
+		env.Scope = &gophercloud.AuthScope{}
+	}
+	env.AllowReauth = true
+	return env, nil
 }
 
 func (oc OpenstackConfig) GetRegion() (string, error) {
-
 	var region string
 	if region = os.Getenv("OS_REGION_NAME"); region != "" {
 		if len(region) > 1 {
@@ -159,7 +164,7 @@ func (oc OpenstackConfig) GetRegion() (string, error) {
 	// TODO: Unsure if this is the correct section for region
 	values, err := oc.getSection("Global", items)
 	if err != nil {
-		return "", fmt.Errorf("Region not provided in OS_REGION_NAME or openstack config section GLOBAL")
+		return "", fmt.Errorf("region not provided in OS_REGION_NAME or openstack config section GLOBAL")
 	}
 	return values["region"], nil
 }
@@ -227,8 +232,10 @@ type SwiftPath struct {
 	hash   string
 }
 
-var _ Path = &SwiftPath{}
-var _ HasHash = &SwiftPath{}
+var (
+	_ Path    = &SwiftPath{}
+	_ HasHash = &SwiftPath{}
+)
 
 // swiftReadBackoff is the backoff strategy for Swift read retries.
 var swiftReadBackoff = wait.Backoff{
@@ -289,6 +296,10 @@ func (p *SwiftPath) Remove() error {
 	} else {
 		return wait.ErrWaitTimeout
 	}
+}
+
+func (p *SwiftPath) RemoveAllVersions() error {
+	return p.Remove()
 }
 
 func (p *SwiftPath) Join(relativePath ...string) Path {
@@ -474,7 +485,7 @@ func (p *SwiftPath) readPath(opt swiftobject.ListOpts) ([]Path, error) {
 // ReadDir implements Path::ReadDir.
 func (p *SwiftPath) ReadDir() ([]Path, error) {
 	prefix := p.key
-	if !strings.HasSuffix(prefix, "/") {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
 	opt := swiftobject.ListOpts{
@@ -487,7 +498,7 @@ func (p *SwiftPath) ReadDir() ([]Path, error) {
 // ReadTree implements Path::ReadTree.
 func (p *SwiftPath) ReadTree() ([]Path, error) {
 	prefix := p.key
-	if !strings.HasSuffix(prefix, "/") {
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
 		prefix += "/"
 	}
 	opt := swiftobject.ListOpts{
@@ -517,7 +528,7 @@ func (p *SwiftPath) Hash(a hashing.HashAlgorithm) (*hashing.Hash, error) {
 
 	md5Bytes, err := hex.DecodeString(md5)
 	if err != nil {
-		return nil, fmt.Errorf("Etag was not a valid MD5 sum: %q", md5)
+		return nil, fmt.Errorf("etag was not a valid MD5 sum: %q", md5)
 	}
 
 	return &hashing.Hash{Algorithm: hashing.HashAlgorithmMD5, HashValue: md5Bytes}, nil

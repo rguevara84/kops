@@ -21,13 +21,15 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/util/pkg/hashing"
 )
 
-func WriteFile(destPath string, contents Resource, fileMode os.FileMode, dirMode os.FileMode) error {
+// WriteFile writes a file to the specified path, setting the mode, owner & group.
+func WriteFile(destPath string, contents Resource, fileMode os.FileMode, dirMode os.FileMode, owner string, group string) error {
 	err := os.MkdirAll(path.Dir(destPath), dirMode)
 	if err != nil {
 		return fmt.Errorf("error creating directories for destination file %q: %v", destPath, err)
@@ -43,17 +45,16 @@ func WriteFile(destPath string, contents Resource, fileMode os.FileMode, dirMode
 		return err
 	}
 
+	_, err = EnsureFileOwner(destPath, owner, group)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func writeFileContents(destPath string, src Resource, fileMode os.FileMode) error {
 	klog.Infof("Writing file %q", destPath)
-
-	out, err := os.OpenFile(destPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, fileMode)
-	if err != nil {
-		return fmt.Errorf("error opening destination file %q: %v", destPath, err)
-	}
-	defer out.Close()
 
 	in, err := src.Open()
 	if err != nil {
@@ -61,10 +62,42 @@ func writeFileContents(destPath string, src Resource, fileMode os.FileMode) erro
 	}
 	defer SafeClose(in)
 
-	_, err = io.Copy(out, in)
+	dir := filepath.Dir(destPath)
+
+	tempFile, err := os.CreateTemp(dir, ".writefile")
 	if err != nil {
-		return fmt.Errorf("error writing file %q: %v", destPath, err)
+		return fmt.Errorf("error creating temp file in %q: %w", dir, err)
 	}
+
+	closeTempFile := true
+	deleteTempFile := true
+	defer func() {
+		if closeTempFile {
+			if err := tempFile.Close(); err != nil {
+				klog.Warningf("error closing tempfile %q: %v", tempFile.Name(), err)
+			}
+		}
+		if deleteTempFile {
+			if err := os.Remove(tempFile.Name()); err != nil {
+				klog.Warningf("error removing tempfile %q: %v", tempFile.Name(), err)
+			}
+		}
+	}()
+
+	if _, err := io.Copy(tempFile, in); err != nil {
+		return fmt.Errorf("error writing file %q: %v", tempFile.Name(), err)
+	}
+
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("error closing temp file %q: %w", tempFile.Name(), err)
+	}
+	closeTempFile = false
+
+	if err := os.Rename(tempFile.Name(), destPath); err != nil {
+		return fmt.Errorf("error renaming temp file %q -> %q: %w", tempFile.Name(), destPath, err)
+	}
+	deleteTempFile = false
+
 	return nil
 }
 
@@ -99,10 +132,9 @@ func fileHasHash(f string, expected *hashing.Hash) (bool, error) {
 	if actual.Equal(expected) {
 		klog.V(2).Infof("Hash matched for %q: %v", f, expected)
 		return true, nil
-	} else {
-		klog.V(2).Infof("Hash did not match for %q: actual=%v vs expected=%v", f, actual, expected)
-		return false, nil
 	}
+	klog.V(2).Infof("Hash did not match for %q: actual=%v vs expected=%v", f, actual, expected)
+	return false, nil
 }
 
 func ParseFileMode(s string, defaultMode os.FileMode) (os.FileMode, error) {

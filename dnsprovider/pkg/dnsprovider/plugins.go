@@ -22,7 +22,7 @@ import (
 	"os"
 	"sync"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // Factory is a function that returns a dnsprovider.Interface.
@@ -35,9 +35,9 @@ type Factory func(config io.Reader) (Interface, error)
 var providersMutex sync.Mutex
 var providers = make(map[string]Factory)
 
-// RegisterDnsProvider registers a dnsprovider.Factory by name.  This
+// RegisterDNSProvider registers a dnsprovider.Factory by name.  This
 // is expected to happen during startup.
-func RegisterDnsProvider(name string, cloud Factory) {
+func RegisterDNSProvider(name string, cloud Factory) {
 	providersMutex.Lock()
 	defer providersMutex.Unlock()
 	if _, found := providers[name]; found {
@@ -87,7 +87,7 @@ func InitDnsProvider(name string, configFilePath string) (Interface, error) {
 		var config *os.File
 		config, err = os.Open(configFilePath)
 		if err != nil {
-			return nil, fmt.Errorf("Couldn't open DNS provider configuration %s: %#v", configFilePath, err)
+			return nil, fmt.Errorf("couldn't open DNS provider configuration %s: %#v", configFilePath, err)
 		}
 
 		defer config.Close()

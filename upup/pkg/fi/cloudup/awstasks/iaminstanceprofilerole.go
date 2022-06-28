@@ -22,17 +22,18 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=IAMInstanceProfileRole
+// +kops:fitask
 type IAMInstanceProfileRole struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	InstanceProfile *IAMInstanceProfile
 	Role            *IAMRole
@@ -51,7 +52,7 @@ func (e *IAMInstanceProfileRole) Find(c *fi.Context) (*IAMInstanceProfileRole, e
 
 	response, err := cloud.IAM().GetInstanceProfile(request)
 	if awsErr, ok := err.(awserr.Error); ok {
-		if awsErr.Code() == "NoSuchEntity" {
+		if awsErr.Code() == iam.ErrCodeNoSuchEntityException {
 			return nil, nil
 		}
 	}
@@ -106,34 +107,35 @@ func (_ *IAMInstanceProfileRole) RenderAWS(t *awsup.AWSAPITarget, a, e, changes 
 			return fmt.Errorf("error creating IAMInstanceProfileRole: %v", err)
 		}
 	}
-
-	// TODO: Should we use path as our tag?
-	return nil // No tags in IAM
+	return nil
 }
 
 type terraformIAMInstanceProfile struct {
-	Name *string            `json:"name"`
-	Role *terraform.Literal `json:"role"`
+	Name *string                  `cty:"name"`
+	Role *terraformWriter.Literal `cty:"role"`
+	Tags map[string]string        `cty:"tags"`
 }
 
 func (_ *IAMInstanceProfileRole) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *IAMInstanceProfileRole) error {
 	tf := &terraformIAMInstanceProfile{
 		Name: e.InstanceProfile.Name,
 		Role: e.Role.TerraformLink(),
+		Tags: e.InstanceProfile.Tags,
 	}
 
 	return t.RenderResource("aws_iam_instance_profile", *e.InstanceProfile.Name, tf)
 }
 
 type cloudformationIAMInstanceProfile struct {
-	//Path  *string              `json:"name"`
-	Roles []*cloudformation.Literal `json:"Roles"`
+	InstanceProfileName *string                   `json:"InstanceProfileName"`
+	Roles               []*cloudformation.Literal `json:"Roles"`
+	// TODO: Add tags when Cloudformation supports them
 }
 
 func (_ *IAMInstanceProfileRole) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *IAMInstanceProfileRole) error {
 	cf := &cloudformationIAMInstanceProfile{
-		//Path:  e.InstanceProfile.Name,
-		Roles: []*cloudformation.Literal{e.Role.CloudformationLink()},
+		InstanceProfileName: e.InstanceProfile.Name,
+		Roles:               []*cloudformation.Literal{e.Role.CloudformationLink()},
 	}
 
 	return t.RenderResource("AWS::IAM::InstanceProfile", *e.InstanceProfile.Name, cf)

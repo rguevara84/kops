@@ -25,14 +25,42 @@ import (
 )
 
 func (c *openstackCloud) CreatePort(opt ports.CreateOptsBuilder) (*ports.Port, error) {
+	return createPort(c, opt)
+}
+
+func createPort(c OpenstackCloud, opt ports.CreateOptsBuilder) (*ports.Port, error) {
 	var p *ports.Port
 
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		v, err := ports.Create(c.neutronClient, opt).Extract()
+		port, err := ports.Create(c.NetworkingClient(), opt).Extract()
 		if err != nil {
 			return false, fmt.Errorf("error creating port: %v", err)
 		}
-		p = v
+		p = port
+		return true, nil
+	})
+	if err != nil {
+		return p, err
+	} else if done {
+		return p, nil
+	} else {
+		return p, wait.ErrWaitTimeout
+	}
+}
+
+func (c *openstackCloud) UpdatePort(id string, opt ports.UpdateOptsBuilder) (*ports.Port, error) {
+	return updatePort(c, id, opt)
+}
+
+func updatePort(c OpenstackCloud, id string, opt ports.UpdateOptsBuilder) (*ports.Port, error) {
+	var p *ports.Port
+
+	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
+		port, err := ports.Update(c.NetworkingClient(), id, opt).Extract()
+		if err != nil {
+			return false, err
+		}
+		p = port
 		return true, nil
 	})
 	if err != nil {
@@ -45,10 +73,14 @@ func (c *openstackCloud) CreatePort(opt ports.CreateOptsBuilder) (*ports.Port, e
 }
 
 func (c *openstackCloud) GetPort(id string) (*ports.Port, error) {
+	return getPort(c, id)
+}
+
+func getPort(c OpenstackCloud, id string) (*ports.Port, error) {
 	var p *ports.Port
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		port, err := ports.Get(c.neutronClient, id).Extract()
+		port, err := ports.Get(c.NetworkingClient(), id).Extract()
 		if err != nil {
 			return false, err
 		}
@@ -65,10 +97,14 @@ func (c *openstackCloud) GetPort(id string) (*ports.Port, error) {
 }
 
 func (c *openstackCloud) ListPorts(opt ports.ListOptsBuilder) ([]ports.Port, error) {
+	return listPorts(c, opt)
+}
+
+func listPorts(c OpenstackCloud, opt ports.ListOptsBuilder) ([]ports.Port, error) {
 	var p []ports.Port
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := ports.List(c.neutronClient, opt).AllPages()
+		allPages, err := ports.List(c.NetworkingClient(), opt).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("error listing ports: %v", err)
 		}
@@ -90,12 +126,19 @@ func (c *openstackCloud) ListPorts(opt ports.ListOptsBuilder) ([]ports.Port, err
 }
 
 func (c *openstackCloud) DeletePort(portID string) error {
-	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		err := ports.Delete(c.neutronClient, portID).ExtractErr()
+	return deletePort(c, portID)
+}
+
+func deletePort(c OpenstackCloud, portID string) error {
+	done, err := vfs.RetryWithBackoff(deleteBackoff, func() (bool, error) {
+		err := ports.Delete(c.NetworkingClient(), portID).ExtractErr()
 		if err != nil && !isNotFound(err) {
 			return false, fmt.Errorf("error deleting port: %v", err)
 		}
-		return true, nil
+		if isNotFound(err) {
+			return true, nil
+		}
+		return false, nil
 	})
 	if err != nil {
 		return err

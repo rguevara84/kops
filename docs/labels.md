@@ -1,6 +1,6 @@
 # Labels
 
-There are two main types of labels that kops can create:
+There are two main types of labels that kOps can create:
 
 * `cloudLabels` become tags in AWS on the instances
 * `nodeLabels` become labels on the k8s Node objects
@@ -17,9 +17,9 @@ An example:
 
 `kops edit ig nodes`
 
-```
+```yaml
 ...
-spec: 
+spec:
   cloudLabels:
     team: me
     project: ion
@@ -28,9 +28,9 @@ spec:
 
 `kops edit cluster`
 
-```
+```yaml
 ...
-spec: 
+spec:
   cloudLabels:
     team: me
     project: ion
@@ -48,9 +48,9 @@ An example:
 
 `kops edit ig nodes`
 
-```
+```yaml
 ...
-spec: 
+spec:
   nodeLabels:
     spot: "false"
 ...
@@ -62,7 +62,7 @@ Note that keys and values are strings, so you need quotes around values that YAM
 
 To apply changes, you'll need to do a `kops update cluster` and then likely a `kops rolling-update cluster`
 
-For AWS if `kops rolling-update cluster --instance-group nodes` returns "No rolling-update required." the [kops rolling-update cluster](https://github.com/kubernetes/kops/blob/8bc48ef10a44a3e481b604f5dbb663420c68dcab/docs/cli/kops_rolling-update_cluster.md) `--force` flag can be used to force a rolling update, even when no changes are identified.
+For AWS if `kops rolling-update cluster --instance-group nodes` returns "No rolling-update required." the [kops rolling-update cluster](cli/kops_rolling-update_cluster.md) `--force` flag can be used to force a rolling update, even when no changes are identified.
 
 Example:
 

@@ -7,7 +7,7 @@ creates AWS Application Load Balancer (ALB) that is used to terminate TLS connec
 certificates. ALBs are used to route traffic to an Ingress http router for example
 [skipper](https://github.com/zalando/skipper/), which routes
 traffic to Kubernetes services and implements
-[advanced features](https://zalando.github.io/skipper/dataclients/kubernetes/)
+[advanced features](https://opensource.zalando.com/skipper/kubernetes/ingress-controller/)
 like green-blue deployments, feature toggles, rate limits,
 circuitbreakers, metrics, access logs, opentracing API, shadow traffic or A/B tests.
 
@@ -111,7 +111,7 @@ kube-ingress-aws-controller, which we will use:
 }
 ```
 
-To apply the mentioned policy you have to add [additionalPolicies with kops](https://github.com/kubernetes/kops/blob/master/docs/iam_roles.md) for your cluster, so edit your cluster.
+To apply the mentioned policy you have to add [additionalPolicies with kOps](https://github.com/kubernetes/kops/blob/master/docs/iam_roles.md) for your cluster, so edit your cluster.
 
 ```
 kops edit cluster $KOPS_CLUSTER_NAME

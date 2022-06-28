@@ -17,28 +17,30 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
-
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kops/cmd/kops/util"
+	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/instancegroups"
 	"k8s.io/kops/upup/pkg/fi/cloudup"
 	"k8s.io/kops/util/pkg/ui"
-	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
-	"k8s.io/kubernetes/pkg/kubectl/util/templates"
+	"k8s.io/kubectl/pkg/util/i18n"
+	"k8s.io/kubectl/pkg/util/templates"
 )
 
 var (
-	deleteIgLong = templates.LongDesc(i18n.T(`
-		Delete an instancegroup configuration.  kops has the concept of "instance groups",
+	deleteInstanceGroupLong = templates.LongDesc(i18n.T(`
+		Delete an instance group configuration. kOps has the concept of "instance groups",
 		which are a group of similar virtual machines. On AWS, they map to an
-		AutoScalingGroup. An ig work either as a Kubernetes master or a node.`))
+		AutoScalingGroup.`))
 
-	deleteIgExample = templates.Examples(i18n.T(`
+	deleteInstanceGroupExample = templates.Examples(i18n.T(`
 
 		# Delete an instancegroup for the k8s-cluster.example.com cluster.
 		# The --yes option runs the command immediately.
@@ -46,7 +48,7 @@ var (
 		kops delete ig --name=k8s-cluster.example.com node-example --yes
 		`))
 
-	deleteIgShort = i18n.T(`Delete instancegroup`)
+	deleteInstanceGroupShort = i18n.T(`Delete instance group.`)
 )
 
 type DeleteInstanceGroupOptions struct {
@@ -59,26 +61,36 @@ func NewCmdDeleteInstanceGroup(f *util.Factory, out io.Writer) *cobra.Command {
 	options := &DeleteInstanceGroupOptions{}
 
 	cmd := &cobra.Command{
-		Use:     "instancegroup",
+		Use:     "instancegroup INSTANCE_GROUP",
 		Aliases: []string{"instancegroups", "ig"},
-		Short:   deleteIgShort,
-		Long:    deleteIgLong,
-		Example: deleteIgExample,
-		Run: func(cmd *cobra.Command, args []string) {
+		Short:   deleteInstanceGroupShort,
+		Long:    deleteInstanceGroupLong,
+		Example: deleteInstanceGroupExample,
+		Args: func(cmd *cobra.Command, args []string) error {
+			options.ClusterName = rootCommand.ClusterName(true)
+
+			if options.ClusterName == "" {
+				return fmt.Errorf("--name is required")
+			}
+
 			if len(args) == 0 {
-				exitWithError(fmt.Errorf("Specify name of instance group to delete"))
+				return fmt.Errorf("must specify the name of the instance group to delete")
 			}
+
+			options.GroupName = args[0]
+
 			if len(args) != 1 {
-				exitWithError(fmt.Errorf("Can only edit one instance group at a time!"))
+				return fmt.Errorf("can only delete one instance group at a time")
 			}
 
-			groupName := args[0]
-			options.GroupName = groupName
-
-			options.ClusterName = rootCommand.ClusterName()
+			return nil
+		},
+		ValidArgsFunction: completeInstanceGroup(f, nil, &[]string{strings.ToLower(string(kops.InstanceGroupRoleMaster))}),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.TODO()
 
 			if !options.Yes {
-				message := fmt.Sprintf("Do you really want to delete instance group %q? This action cannot be undone.", groupName)
+				message := fmt.Sprintf("Do you really want to delete instance group %q? This action cannot be undone.", options.GroupName)
 
 				c := &ui.ConfirmArgs{
 					Out:     out,
@@ -89,7 +101,7 @@ func NewCmdDeleteInstanceGroup(f *util.Factory, out io.Writer) *cobra.Command {
 
 				confirmed, err := ui.GetConfirm(c)
 				if err != nil {
-					exitWithError(err)
+					return err
 				}
 				if !confirmed {
 					os.Exit(1)
@@ -98,10 +110,7 @@ func NewCmdDeleteInstanceGroup(f *util.Factory, out io.Writer) *cobra.Command {
 				}
 			}
 
-			err := RunDeleteInstanceGroup(f, out, options)
-			if err != nil {
-				exitWithError(err)
-			}
+			return RunDeleteInstanceGroup(ctx, f, out, options)
 		},
 	}
 
@@ -111,8 +120,7 @@ func NewCmdDeleteInstanceGroup(f *util.Factory, out io.Writer) *cobra.Command {
 }
 
 // RunDeleteInstanceGroup runs the deletion of an instance group
-func RunDeleteInstanceGroup(f *util.Factory, out io.Writer, options *DeleteInstanceGroupOptions) error {
-
+func RunDeleteInstanceGroup(ctx context.Context, f *util.Factory, out io.Writer, options *DeleteInstanceGroupOptions) error {
 	// TODO make this drain and validate the ig?
 	// TODO implement drain and validate logic
 	groupName := options.GroupName
@@ -120,12 +128,7 @@ func RunDeleteInstanceGroup(f *util.Factory, out io.Writer, options *DeleteInsta
 		return fmt.Errorf("GroupName is required")
 	}
 
-	clusterName := options.ClusterName
-	if clusterName == "" {
-		return fmt.Errorf("ClusterName is required")
-	}
-
-	cluster, err := GetCluster(f, clusterName)
+	cluster, err := GetCluster(ctx, f, options.ClusterName)
 	if err != nil {
 		return err
 	}
@@ -135,7 +138,7 @@ func RunDeleteInstanceGroup(f *util.Factory, out io.Writer, options *DeleteInsta
 		return err
 	}
 
-	group, err := clientset.InstanceGroupsFor(cluster).Get(groupName, metav1.GetOptions{})
+	group, err := clientset.InstanceGroupsFor(cluster).Get(ctx, groupName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("error reading InstanceGroup %q: %v", groupName, err)
 	}
@@ -143,16 +146,35 @@ func RunDeleteInstanceGroup(f *util.Factory, out io.Writer, options *DeleteInsta
 		return fmt.Errorf("InstanceGroup %q not found", groupName)
 	}
 
-	cloud, err := cloudup.BuildCloud(cluster)
-	if err != nil {
-		return err
-	}
-
 	fmt.Fprintf(out, "InstanceGroup %q found for deletion\n", groupName)
+
+	if group.Spec.Role == kops.InstanceGroupRoleMaster {
+		groups, err := clientset.InstanceGroupsFor(cluster).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return fmt.Errorf("listing InstanceGroups: %v", err)
+		}
+
+		onlyMaster := true
+		for _, ig := range groups.Items {
+			if ig.Name != groupName && ig.Spec.Role == kops.InstanceGroupRoleMaster {
+				onlyMaster = false
+				break
+			}
+		}
+
+		if onlyMaster {
+			return fmt.Errorf("cannot delete the only control plane instance group")
+		}
+	}
 
 	if !options.Yes {
 		fmt.Fprintf(out, "\nMust specify --yes to delete instancegroup\n")
 		return nil
+	}
+
+	cloud, err := cloudup.BuildCloud(cluster)
+	if err != nil {
+		return err
 	}
 
 	d := &instancegroups.DeleteInstanceGroup{}

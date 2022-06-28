@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Kubernetes Authors.
+Copyright The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,19 +19,22 @@ limitations under the License.
 package clientset
 
 import (
+	"fmt"
+	"net/http"
+
 	discovery "k8s.io/client-go/discovery"
 	rest "k8s.io/client-go/rest"
 	flowcontrol "k8s.io/client-go/util/flowcontrol"
 	kopsinternalversion "k8s.io/kops/pkg/client/clientset_generated/clientset/typed/kops/internalversion"
-	kopsv1alpha1 "k8s.io/kops/pkg/client/clientset_generated/clientset/typed/kops/v1alpha1"
 	kopsv1alpha2 "k8s.io/kops/pkg/client/clientset_generated/clientset/typed/kops/v1alpha2"
+	kopsv1alpha3 "k8s.io/kops/pkg/client/clientset_generated/clientset/typed/kops/v1alpha3"
 )
 
 type Interface interface {
 	Discovery() discovery.DiscoveryInterface
 	Kops() kopsinternalversion.KopsInterface
-	KopsV1alpha1() kopsv1alpha1.KopsV1alpha1Interface
 	KopsV1alpha2() kopsv1alpha2.KopsV1alpha2Interface
+	KopsV1alpha3() kopsv1alpha3.KopsV1alpha3Interface
 }
 
 // Clientset contains the clients for groups. Each group has exactly one
@@ -39,8 +42,8 @@ type Interface interface {
 type Clientset struct {
 	*discovery.DiscoveryClient
 	kops         *kopsinternalversion.KopsClient
-	kopsV1alpha1 *kopsv1alpha1.KopsV1alpha1Client
 	kopsV1alpha2 *kopsv1alpha2.KopsV1alpha2Client
+	kopsV1alpha3 *kopsv1alpha3.KopsV1alpha3Client
 }
 
 // Kops retrieves the KopsClient
@@ -48,14 +51,14 @@ func (c *Clientset) Kops() kopsinternalversion.KopsInterface {
 	return c.kops
 }
 
-// KopsV1alpha1 retrieves the KopsV1alpha1Client
-func (c *Clientset) KopsV1alpha1() kopsv1alpha1.KopsV1alpha1Interface {
-	return c.kopsV1alpha1
-}
-
 // KopsV1alpha2 retrieves the KopsV1alpha2Client
 func (c *Clientset) KopsV1alpha2() kopsv1alpha2.KopsV1alpha2Interface {
 	return c.kopsV1alpha2
+}
+
+// KopsV1alpha3 retrieves the KopsV1alpha3Client
+func (c *Clientset) KopsV1alpha3() kopsv1alpha3.KopsV1alpha3Interface {
+	return c.kopsV1alpha3
 }
 
 // Discovery retrieves the DiscoveryClient
@@ -67,27 +70,55 @@ func (c *Clientset) Discovery() discovery.DiscoveryInterface {
 }
 
 // NewForConfig creates a new Clientset for the given config.
+// If config's RateLimiter is not set and QPS and Burst are acceptable,
+// NewForConfig will generate a rate-limiter in configShallowCopy.
+// NewForConfig is equivalent to NewForConfigAndClient(c, httpClient),
+// where httpClient was generated with rest.HTTPClientFor(c).
 func NewForConfig(c *rest.Config) (*Clientset, error) {
 	configShallowCopy := *c
-	if configShallowCopy.RateLimiter == nil && configShallowCopy.QPS > 0 {
-		configShallowCopy.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(configShallowCopy.QPS, configShallowCopy.Burst)
+
+	if configShallowCopy.UserAgent == "" {
+		configShallowCopy.UserAgent = rest.DefaultKubernetesUserAgent()
 	}
-	var cs Clientset
-	var err error
-	cs.kops, err = kopsinternalversion.NewForConfig(&configShallowCopy)
-	if err != nil {
-		return nil, err
-	}
-	cs.kopsV1alpha1, err = kopsv1alpha1.NewForConfig(&configShallowCopy)
-	if err != nil {
-		return nil, err
-	}
-	cs.kopsV1alpha2, err = kopsv1alpha2.NewForConfig(&configShallowCopy)
+
+	// share the transport between all clients
+	httpClient, err := rest.HTTPClientFor(&configShallowCopy)
 	if err != nil {
 		return nil, err
 	}
 
-	cs.DiscoveryClient, err = discovery.NewDiscoveryClientForConfig(&configShallowCopy)
+	return NewForConfigAndClient(&configShallowCopy, httpClient)
+}
+
+// NewForConfigAndClient creates a new Clientset for the given config and http client.
+// Note the http client provided takes precedence over the configured transport values.
+// If config's RateLimiter is not set and QPS and Burst are acceptable,
+// NewForConfigAndClient will generate a rate-limiter in configShallowCopy.
+func NewForConfigAndClient(c *rest.Config, httpClient *http.Client) (*Clientset, error) {
+	configShallowCopy := *c
+	if configShallowCopy.RateLimiter == nil && configShallowCopy.QPS > 0 {
+		if configShallowCopy.Burst <= 0 {
+			return nil, fmt.Errorf("burst is required to be greater than 0 when RateLimiter is not set and QPS is set to greater than 0")
+		}
+		configShallowCopy.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(configShallowCopy.QPS, configShallowCopy.Burst)
+	}
+
+	var cs Clientset
+	var err error
+	cs.kops, err = kopsinternalversion.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	cs.kopsV1alpha2, err = kopsv1alpha2.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+	cs.kopsV1alpha3, err = kopsv1alpha3.NewForConfigAndClient(&configShallowCopy, httpClient)
+	if err != nil {
+		return nil, err
+	}
+
+	cs.DiscoveryClient, err = discovery.NewDiscoveryClientForConfigAndClient(&configShallowCopy, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -97,21 +128,19 @@ func NewForConfig(c *rest.Config) (*Clientset, error) {
 // NewForConfigOrDie creates a new Clientset for the given config and
 // panics if there is an error in the config.
 func NewForConfigOrDie(c *rest.Config) *Clientset {
-	var cs Clientset
-	cs.kops = kopsinternalversion.NewForConfigOrDie(c)
-	cs.kopsV1alpha1 = kopsv1alpha1.NewForConfigOrDie(c)
-	cs.kopsV1alpha2 = kopsv1alpha2.NewForConfigOrDie(c)
-
-	cs.DiscoveryClient = discovery.NewDiscoveryClientForConfigOrDie(c)
-	return &cs
+	cs, err := NewForConfig(c)
+	if err != nil {
+		panic(err)
+	}
+	return cs
 }
 
 // New creates a new Clientset for the given RESTClient.
 func New(c rest.Interface) *Clientset {
 	var cs Clientset
 	cs.kops = kopsinternalversion.New(c)
-	cs.kopsV1alpha1 = kopsv1alpha1.New(c)
 	cs.kopsV1alpha2 = kopsv1alpha2.New(c)
+	cs.kopsV1alpha3 = kopsv1alpha3.New(c)
 
 	cs.DiscoveryClient = discovery.NewDiscoveryClient(c)
 	return &cs

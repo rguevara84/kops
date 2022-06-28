@@ -18,7 +18,6 @@ package awstasks
 
 import (
 	"fmt"
-
 	"math/rand"
 	"reflect"
 	"strconv"
@@ -26,18 +25,19 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/route53"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
 // DNSZone is a zone object in a dns provider
-//go:generate fitask -type=DNSZone
+// +kops:fitask
 type DNSZone struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	DNSName *string
 	ZoneID  *string
@@ -226,9 +226,9 @@ func (_ *DNSZone) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *DNSZone) error
 }
 
 type terraformRoute53ZoneAssociation struct {
-	ZoneID    *terraform.Literal   `json:"zone_id"`
-	VPCID     *terraform.Literal   `json:"vpc_id"`
-	Lifecycle *terraform.Lifecycle `json:"lifecycle,omitempty"`
+	ZoneID    *terraformWriter.Literal `cty:"zone_id"`
+	VPCID     *terraformWriter.Literal `cty:"vpc_id"`
+	Lifecycle *terraform.Lifecycle     `cty:"lifecycle"`
 }
 
 func (_ *DNSZone) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *DNSZone) error {
@@ -271,7 +271,7 @@ func (_ *DNSZone) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *D
 			if assocNeeded {
 				klog.Infof("No association between VPC %q and zone %q; adding", vpcName, aws.StringValue(z.HostedZone.Name))
 				tf := &terraformRoute53ZoneAssociation{
-					ZoneID: terraform.LiteralFromStringValue(*e.ZoneID),
+					ZoneID: terraformWriter.LiteralFromStringValue(*e.ZoneID),
 					VPCID:  e.PrivateVPC.TerraformLink(),
 				}
 				return t.RenderResource("aws_route53_zone_association", *e.Name, tf)
@@ -290,13 +290,13 @@ func (_ *DNSZone) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *D
 	return fmt.Errorf("Creation of Route53 hosted zones is not supported for terraform")
 }
 
-func (e *DNSZone) TerraformLink() *terraform.Literal {
+func (e *DNSZone) TerraformLink() *terraformWriter.Literal {
 	if e.ZoneID != nil {
 		klog.V(4).Infof("reusing existing route53 zone with id %q", *e.ZoneID)
-		return terraform.LiteralFromStringValue(*e.ZoneID)
+		return terraformWriter.LiteralFromStringValue(*e.ZoneID)
 	}
 
-	return terraform.LiteralSelfLink("aws_route53_zone", *e.Name)
+	return terraformWriter.LiteralSelfLink("aws_route53_zone", *e.Name)
 }
 
 type cloudformationRoute53Zone struct {

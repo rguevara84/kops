@@ -1,0 +1,150 @@
+Content-Type: multipart/mixed; boundary="MIMEBOUNDARY"
+MIME-Version: 1.0
+
+--MIMEBOUNDARY
+Content-Disposition: attachment; filename="nodeup.sh"
+Content-Transfer-Encoding: 7bit
+Content-Type: text/x-shellscript
+Mime-Version: 1.0
+
+#!/bin/bash
+set -o errexit
+set -o nounset
+set -o pipefail
+
+NODEUP_URL_AMD64=https://artifacts.k8s.io/binaries/kops/1.21.0-alpha.1/linux/amd64/nodeup,https://github.com/kubernetes/kops/releases/download/v1.21.0-alpha.1/nodeup-linux-amd64
+NODEUP_HASH_AMD64=585fbda0f0a43184656b4bfc0cc5f0c0b85612faf43b8816acca1f99d422c924
+NODEUP_URL_ARM64=https://artifacts.k8s.io/binaries/kops/1.21.0-alpha.1/linux/arm64/nodeup,https://github.com/kubernetes/kops/releases/download/v1.21.0-alpha.1/nodeup-linux-arm64
+NODEUP_HASH_ARM64=7603675379699105a9b9915ff97718ea99b1bbb01a4c184e2f827c8a96e8e865
+
+export AWS_REGION=us-test-1
+
+
+
+
+sysctl -w net.core.rmem_max=16777216 || true
+sysctl -w net.core.wmem_max=16777216 || true
+sysctl -w net.ipv4.tcp_rmem='4096 87380 16777216' || true
+sysctl -w net.ipv4.tcp_wmem='4096 87380 16777216' || true
+
+
+function ensure-install-dir() {
+  INSTALL_DIR="/opt/kops"
+  # On ContainerOS, we install under /var/lib/toolbox; /opt is ro and noexec
+  if [[ -d /var/lib/toolbox ]]; then
+    INSTALL_DIR="/var/lib/toolbox/kops"
+  fi
+  mkdir -p ${INSTALL_DIR}/bin
+  mkdir -p ${INSTALL_DIR}/conf
+  cd ${INSTALL_DIR}
+}
+
+# Retry a download until we get it. args: name, sha, urls
+download-or-bust() {
+  local -r file="$1"
+  local -r hash="$2"
+  local -r urls=( $(split-commas "$3") )
+
+  if [[ -f "${file}" ]]; then
+    if ! validate-hash "${file}" "${hash}"; then
+      rm -f "${file}"
+    else
+      return 0
+    fi
+  fi
+
+  while true; do
+    for url in "${urls[@]}"; do
+      commands=(
+        "curl -f --compressed -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget --compression=auto -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
+        "curl -f -Lo "${file}" --connect-timeout 20 --retry 6 --retry-delay 10"
+        "wget -O "${file}" --connect-timeout=20 --tries=6 --wait=10"
+      )
+      for cmd in "${commands[@]}"; do
+        echo "Attempting download with: ${cmd} {url}"
+        if ! (${cmd} "${url}"); then
+          echo "== Download failed with ${cmd} =="
+          continue
+        fi
+        if ! validate-hash "${file}" "${hash}"; then
+          echo "== Hash validation of ${url} failed. Retrying. =="
+          rm -f "${file}"
+        else
+          echo "== Downloaded ${url} (SHA256 = ${hash}) =="
+          return 0
+        fi
+      done
+    done
+
+    echo "All downloads failed; sleeping before retrying"
+    sleep 60
+  done
+}
+
+validate-hash() {
+  local -r file="$1"
+  local -r expected="$2"
+  local actual
+
+  actual=$(sha256sum ${file} | awk '{ print $1 }') || true
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "== ${file} corrupted, hash ${actual} doesn't match expected ${expected} =="
+    return 1
+  fi
+}
+
+function split-commas() {
+  echo $1 | tr "," "\n"
+}
+
+function download-release() {
+  case "$(uname -m)" in
+  x86_64*|i?86_64*|amd64*)
+    NODEUP_URL="${NODEUP_URL_AMD64}"
+    NODEUP_HASH="${NODEUP_HASH_AMD64}"
+    ;;
+  aarch64*|arm64*)
+    NODEUP_URL="${NODEUP_URL_ARM64}"
+    NODEUP_HASH="${NODEUP_HASH_ARM64}"
+    ;;
+  *)
+    echo "Unsupported host arch: $(uname -m)" >&2
+    exit 1
+    ;;
+  esac
+
+  cd ${INSTALL_DIR}/bin
+  download-or-bust nodeup "${NODEUP_HASH}" "${NODEUP_URL}"
+
+  chmod +x nodeup
+
+  echo "Running nodeup"
+  # We can't run in the foreground because of https://github.com/docker/docker/issues/23793
+  ( cd ${INSTALL_DIR}/bin; ./nodeup --install-systemd-unit --conf=${INSTALL_DIR}/conf/kube_env.yaml --v=8  )
+}
+
+####################################################################################
+
+/bin/systemd-machine-id-setup || echo "failed to set up ensure machine-id configured"
+
+echo "== nodeup node config starting =="
+ensure-install-dir
+
+echo "H4sIAAAAAAAA/3RSTW/bMAy9+1fw0lsn221XbEIvW7KtAdYiSH4BYzEuEVnMRMlZ/v1gN26WfZwMv0eRj++x8ZLdTMKWW1sA4EG/fF7P1ot55J7iAAFQwI0nZ2GLXqkA6DBgS+skEVuaeVQltZBipqKRkJADxVUOiTuy8Ia4M+mGxl7a79STt8BhKwVAT1FZgoXa3Jn6tnDS7F416I73i6AJvT/N2eUNLaP8PA5047MmirPFfGWhrirz8d5UpirreiD3eUU/Mmkaua4A4A5bshCpZU3xaHYf1LCUQ893+7FpX5ub2lQXKm/GoZ7SaFSQcOwk66ecXs7ONG2UvD+ZB3rURJ17w1ciyUI5KpbsllF6dkMhHvS8xvx5/brF/Z2pTF39xkiHHOz0a7w06IspoDltcttyaB8xOE9xigSAem4SS3jE6Cx01Ek8GuyR/fDuoa6qJ74O4mirF/DVBPLw1a+R6OH91fVo31+lE3pRWwAMpjXjgS1xsKrsMZaeN+XJzfJc8IfdAIHSQeJu6XPL4RnHcwpcAOzFLcI24my6qMW/I91jVrK35v71zRMG3pKmkxJKzTg9BkqkZXdihyz0JScnh/AtYkNLiizOwm31H2oWOXGDfilOh+y0+AUAAP//AQAA//+sA4HXWAMAAA==" | base64 -d | gzip -d > conf/cluster_spec.yaml
+
+echo "H4sIAAAAAAAA/1SNsW7CMBQAd3+FvyBW1amWOrRR1QShBIIUIjZjP4cg28/4xZDPR4gpyw13w5UOs9klvE8GkuTqQazEYKfxVxFI7sFbkkJol2mGRAUsykcHhUYvNPqYgFaS1YFmFTT8J8yxUR4kD2iA1qFDB5I3aIC9kON7Wim6SG67fqiuX7e/ig6bc69OtcDQLvQxHG0eUymmdvvT4udi9t/sCQAA//8BAAD//xitTqnBAAAA" | base64 -d | gzip -d > conf/kube_env.yaml
+
+download-release
+echo "== nodeup node config done =="
+
+--MIMEBOUNDARY
+Content-Disposition: attachment; filename="myscript.sh"
+Content-Transfer-Encoding: 7bit
+Content-Type: text/x-shellscript
+Mime-Version: 1.0
+
+#!/bin/sh
+echo "nodes: The time is now $(date -R)!" | tee /root/output.txt
+
+--MIMEBOUNDARY--

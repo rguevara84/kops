@@ -42,6 +42,7 @@ type MockEC2 struct {
 
 	securityGroupNumber int
 	SecurityGroups      map[string]*ec2.SecurityGroup
+	SecurityGroupRules  map[string]*ec2.SecurityGroupRule
 
 	subnets map[string]*subnetInfo
 
@@ -53,9 +54,11 @@ type MockEC2 struct {
 
 	Vpcs map[string]*vpcInfo
 
-	InternetGateways map[string]*ec2.InternetGateway
+	InternetGateways           map[string]*ec2.InternetGateway
+	EgressOnlyInternetGateways map[string]*ec2.EgressOnlyInternetGateway
 
-	LaunchTemplates map[string]*ec2.ResponseLaunchTemplateData
+	launchTemplateNumber int
+	LaunchTemplates      map[string]*launchTemplateInfo
 
 	NatGateways map[string]*ec2.NatGateway
 
@@ -90,12 +93,18 @@ func (m *MockEC2) All() map[string]interface{} {
 		all[id] = o
 	}
 	for id, o := range m.KeyPairs {
-		all["sshkey-"+id] = o
+		all[id] = o
 	}
 	for id, o := range m.Vpcs {
 		all[id] = o
 	}
 	for id, o := range m.InternetGateways {
+		all[id] = o
+	}
+	for id, o := range m.EgressOnlyInternetGateways {
+		all[id] = o
+	}
+	for id, o := range m.LaunchTemplates {
 		all[id] = o
 	}
 	for id, o := range m.NatGateways {

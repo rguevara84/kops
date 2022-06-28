@@ -9,22 +9,22 @@ Edit cluster.
 
 Edit a cluster configuration.
 
- This command changes the desired cluster configuration in the registry.
+This command changes the desired cluster configuration in the registry.
 
-  To set your preferred editor, you can define the EDITOR environment variable.
-  When you have done this, kops will use the editor that you have set.
-  
- kops edit does not update the cloud resources, to apply the changes use "kops update cluster".
+   To set your preferred editor, you can define the EDITOR environment variable.
+   When you have done this, kOps will use the editor that you have set.
+
+kops edit does not update the cloud resources; to apply the changes use `kops update cluster`.
 
 ```
-kops edit cluster [flags]
+kops edit cluster [CLUSTER] [flags]
 ```
 
 ### Examples
 
 ```
   # Edit a cluster configuration in AWS.
-  kops edit cluster k8s.cluster.site --state=s3://kops-state-1234
+  kops edit cluster k8s.cluster.site --state=s3://my-state-store
 ```
 
 ### Options
@@ -36,18 +36,20 @@ kops edit cluster [flags]
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
+      --alsologtostderr                  log to standard error as well as files (no effect when -logtostderr=true)
       --config string                    yaml config file (default is $HOME/.kops.yaml)
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --log_file string                  If non-empty, use this log file
-      --log_file_max_size uint           Defines the maximum size a log file can grow to. Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --log_dir string                   If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                  If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint           Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
+      --one_output                       If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when opening log files
+      --skip_log_headers                 If true, avoid headers when opening log files (no effect when -logtostderr=true)
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
+      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=false) (default 2)
   -v, --v Level                          number for the log level verbosity
       --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
 ```

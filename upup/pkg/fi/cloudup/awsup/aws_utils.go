@@ -19,9 +19,11 @@ package awsup
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/arn"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -29,8 +31,9 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/elb"
 	elbv2 "github.com/aws/aws-sdk-go/service/elbv2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/pkg/truncate"
 )
 
 // allRegions is the list of all regions; tests will set the values
@@ -71,16 +74,19 @@ func ValidateRegion(region string) error {
 		config := aws.NewConfig().WithRegion(awsRegion)
 		config = config.WithCredentialsChainVerboseErrors(true)
 
-		sess, err := session.NewSession(config)
+		sess, err := session.NewSessionWithOptions(session.Options{
+			Config:            *config,
+			SharedConfigState: session.SharedConfigEnable,
+		})
 		if err != nil {
-			return fmt.Errorf("Error starting a new AWS session: %v", err)
+			return fmt.Errorf("error starting a new AWS session: %v", err)
 		}
 
 		client := ec2.New(sess, config)
 
 		response, err := client.DescribeRegions(request)
 		if err != nil {
-			return fmt.Errorf("Got an error while querying for valid regions (verify your AWS credentials?): %v", err)
+			return fmt.Errorf("got an error while querying for valid regions (verify your AWS credentials?): %v", err)
 		}
 		allRegions = response.Regions
 	}
@@ -114,7 +120,7 @@ func FindRegion(cluster *kops.Cluster) (string, error) {
 
 		zoneRegion := subnet.Zone[:len(subnet.Zone)-1]
 		if region != "" && zoneRegion != region {
-			return "", fmt.Errorf("Clusters cannot span multiple regions (found zone %q, but region is %q)", subnet.Zone, region)
+			return "", fmt.Errorf("error Clusters cannot span multiple regions (found zone %q, but region is %q)", subnet.Zone, region)
 		}
 
 		region = zoneRegion
@@ -177,4 +183,73 @@ func AWSErrorMessage(err error) string {
 		return awsError.Message()
 	}
 	return ""
+}
+
+// EC2TagSpecification converts a map of tags to an EC2 TagSpecification
+func EC2TagSpecification(resourceType string, tags map[string]string) []*ec2.TagSpecification {
+	if len(tags) == 0 {
+		return nil
+	}
+	specification := &ec2.TagSpecification{
+		ResourceType: aws.String(resourceType),
+		Tags:         make([]*ec2.Tag, 0),
+	}
+	for k, v := range tags {
+		specification.Tags = append(specification.Tags, &ec2.Tag{
+			Key:   aws.String(k),
+			Value: aws.String(v),
+		})
+	}
+
+	return []*ec2.TagSpecification{specification}
+}
+
+// ELBv2Tags converts a map of tags to ELBv2 Tags
+func ELBv2Tags(tags map[string]string) []*elbv2.Tag {
+	if len(tags) == 0 {
+		return nil
+	}
+	elbv2Tags := make([]*elbv2.Tag, 0)
+	for k, v := range tags {
+		elbv2Tags = append(elbv2Tags, &elbv2.Tag{
+			Key:   aws.String(k),
+			Value: aws.String(v),
+		})
+	}
+
+	return elbv2Tags
+}
+
+// GetClusterName40 will attempt to calculate a meaningful cluster name with a max length of 40
+func GetClusterName40(cluster string) string {
+	return truncate.TruncateString(cluster, truncate.TruncateStringOptions{
+		MaxLength: 40,
+	})
+}
+
+// GetResourceName32 will attempt to calculate a meaningful name for a resource given a prefix
+// Will never return a string longer than 32 chars
+func GetResourceName32(cluster string, prefix string) string {
+	s := prefix + "-" + strings.Replace(cluster, ".", "-", -1)
+
+	// We always compute the hash and add it, lest we trick users into assuming that we never do this
+	opt := truncate.TruncateStringOptions{
+		MaxLength:     32,
+		AlwaysAddHash: true,
+		HashLength:    6,
+	}
+	return truncate.TruncateString(s, opt)
+}
+
+// GetTargetGroupNameFromARN will attempt to parse a target group ARN and return its name
+func GetTargetGroupNameFromARN(targetGroupARN string) (string, error) {
+	parsed, err := arn.Parse(targetGroupARN)
+	if err != nil {
+		return "", fmt.Errorf("error parsing target group ARN: %v", err)
+	}
+	resource := strings.Split(parsed.Resource, "/")
+	if len(resource) != 3 || resource[0] != "targetgroup" {
+		return "", fmt.Errorf("error parsing target group ARN resource: %q", parsed.Resource)
+	}
+	return resource[1], nil
 }

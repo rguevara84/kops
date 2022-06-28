@@ -17,30 +17,26 @@ limitations under the License.
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/pflag"
-	"k8s.io/klog"
-
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	_ "k8s.io/kubernetes/pkg/client/metrics/prometheus" // for client metric registration
+	_ "k8s.io/component-base/metrics/prometheus/restclient" // for client metric registration
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/dns-controller/pkg/dns"
 	"k8s.io/kops/dns-controller/pkg/watchers"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider/providers/aws/route53"
-	k8scoredns "k8s.io/kops/dnsprovider/pkg/dnsprovider/providers/coredns"
+	_ "k8s.io/kops/dnsprovider/pkg/dnsprovider/providers/do"
 	_ "k8s.io/kops/dnsprovider/pkg/dnsprovider/providers/google/clouddns"
-	_ "k8s.io/kops/pkg/resources/digitalocean/dns"
 	"k8s.io/kops/pkg/wellknownports"
 	"k8s.io/kops/protokube/pkg/gossip"
 	gossipdns "k8s.io/kops/protokube/pkg/gossip/dns"
@@ -58,6 +54,7 @@ func main() {
 	fmt.Printf("dns-controller version %s\n", BuildVersion)
 	var dnsServer, dnsProviderID, gossipListen, gossipSecret, watchNamespace, metricsListen, gossipProtocol, gossipSecretSecondary, gossipListenSecondary, gossipProtocolSecondary string
 	var gossipSeeds, gossipSeedsSecondary, zones []string
+	var internalIpv4, internalIpv6 bool
 	var watchIngress bool
 	var updateInterval int
 
@@ -69,7 +66,7 @@ func main() {
 	flags.BoolVar(&watchIngress, "watch-ingress", true, "Configure hostnames found in ingress resources")
 	flags.StringSliceVar(&gossipSeeds, "gossip-seed", gossipSeeds, "If set, will enable gossip zones and seed using the provided addresses")
 	flags.StringSliceVarP(&zones, "zone", "z", []string{}, "Configure permitted zones and their mappings")
-	flags.StringVar(&dnsProviderID, "dns", "aws-route53", "DNS provider we should use (aws-route53, google-clouddns, digitalocean, coredns, gossip)")
+	flags.StringVar(&dnsProviderID, "dns", "aws-route53", "DNS provider we should use (aws-route53, google-clouddns, digitalocean, gossip)")
 	flag.StringVar(&gossipProtocol, "gossip-protocol", "mesh", "mesh/memberlist")
 	flags.StringVar(&gossipListen, "gossip-listen", fmt.Sprintf("0.0.0.0:%d", wellknownports.DNSControllerGossipWeaveMesh), "The address on which to listen if gossip is enabled")
 	flags.StringVar(&gossipSecret, "gossip-secret", gossipSecret, "Secret to use to secure gossip")
@@ -77,6 +74,8 @@ func main() {
 	flag.StringVar(&gossipListenSecondary, "gossip-listen-secondary", fmt.Sprintf("0.0.0.0:%d", wellknownports.DNSControllerGossipMemberlist), "address:port on which to bind for gossip")
 	flags.StringVar(&gossipSecretSecondary, "gossip-secret-secondary", gossipSecret, "Secret to use to secure gossip")
 	flags.StringSliceVar(&gossipSeedsSecondary, "gossip-seed-secondary", gossipSeedsSecondary, "If set, will enable gossip zones and seed using the provided addresses")
+	flags.BoolVar(&internalIpv4, "internal-ipv4", internalIpv4, "Internal network has IPv4")
+	flags.BoolVar(&internalIpv6, "internal-ipv6", internalIpv6, "Internal network has IPv6")
 	flags.StringVar(&watchNamespace, "watch-namespace", "", "Limits the functionality for pods, services and ingress to specific namespace, by default all")
 	flag.IntVar(&route53.MaxBatchSize, "route53-batch-size", route53.MaxBatchSize, "Maximum number of operations performed per changeset batch")
 	flag.StringVar(&metricsListen, "metrics-listen", "", "The address on which to listen for Prometheus metrics.")
@@ -88,6 +87,18 @@ func main() {
 	flag.Set("logtostderr", "true")
 	flags.AddGoFlagSet(flag.CommandLine)
 	flags.Parse(os.Args)
+
+	var internalRecordTypes []dns.RecordType
+	if internalIpv4 {
+		internalRecordTypes = append(internalRecordTypes, dns.RecordTypeA)
+	}
+	if internalIpv6 {
+		internalRecordTypes = append(internalRecordTypes, dns.RecordTypeAAAA)
+	}
+	if len(internalRecordTypes) == 0 {
+		klog.Errorf("must specify at least one of --internal-ipv4 or --internal-ipv6")
+		os.Exit(1)
+	}
 
 	if metricsListen != "" {
 		go func() {
@@ -116,13 +127,7 @@ func main() {
 	var dnsProviders []dnsprovider.Interface
 	if dnsProviderID != "gossip" {
 		var file io.Reader
-		if dnsProviderID == k8scoredns.ProviderName {
-			var lines []string
-			lines = append(lines, "etcd-endpoints = "+dnsServer)
-			lines = append(lines, "zones = "+zones[0])
-			config := "[global]\n" + strings.Join(lines, "\n") + "\n"
-			file = bytes.NewReader([]byte(config))
-		}
+
 		dnsProvider, err := dnsprovider.GetDnsProvider(dnsProviderID, file)
 		if err != nil {
 			klog.Errorf("Error initializing DNS provider %q: %v", dnsProviderID, err)
@@ -195,7 +200,7 @@ func main() {
 	}
 
 	// @step: initialize the watchers
-	if err := initializeWatchers(client, dnsController, watchNamespace, watchIngress); err != nil {
+	if err := initializeWatchers(client, dnsController, watchNamespace, watchIngress, internalRecordTypes); err != nil {
 		klog.Errorf("%s", err)
 		os.Exit(1)
 	}
@@ -205,10 +210,10 @@ func main() {
 }
 
 // initializeWatchers is responsible for creating the watchers
-func initializeWatchers(client kubernetes.Interface, dnsctl *dns.DNSController, namespace string, watchIngress bool) error {
+func initializeWatchers(client kubernetes.Interface, dnsctl *dns.DNSController, namespace string, watchIngress bool, internalRecordTypes []dns.RecordType) error {
 	klog.V(1).Infof("initializing the watch controllers, namespace: %q", namespace)
 
-	nodeController, err := watchers.NewNodeController(client, dnsctl)
+	nodeController, err := watchers.NewNodeController(client, dnsctl, internalRecordTypes)
 	if err != nil {
 		return fmt.Errorf("failed to initialize the node controller, error: %v", err)
 	}

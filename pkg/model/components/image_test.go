@@ -22,10 +22,12 @@ import (
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/assets"
+	"k8s.io/kops/pkg/featureflag"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
 func TestImage(t *testing.T) {
+	featureflag.ParseFlags("-ImageDigest")
 	grid := []struct {
 		Component string
 		Cluster   *kops.Cluster
@@ -39,73 +41,22 @@ func TestImage(t *testing.T) {
 			Component: "kube-apiserver",
 			Cluster: &kops.Cluster{
 				Spec: kops.ClusterSpec{
-					KubernetesVersion: "v1.9.0",
-				},
-			},
-			Expected: "gcr.io/google_containers/kube-apiserver:v1.9.0",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "v1.10.0",
-				},
-			},
-			Expected: "k8s.gcr.io/kube-apiserver:v1.10.0",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "1.10.0",
-				},
-			},
-			Expected: "k8s.gcr.io/kube-apiserver:v1.10.0",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "memfs://v1.9.0-download/",
+					KubernetesVersion: "memfs://v1.20.0-download/",
 				},
 			},
 			VFS: map[string]string{
-				"memfs://v1.9.0-download/bin/linux/amd64/kube-apiserver.docker_tag": "1-9-0dockertag",
+				"memfs://v1.20.0-download/bin/linux/amd64/kube-apiserver.docker_tag": "1-20-0dockertag",
 			},
-			Expected: "gcr.io/google_containers/kube-apiserver:1-9-0dockertag",
+			Expected: "registry.k8s.io/kube-apiserver-amd64:1-20-0dockertag",
 		},
 		{
 			Component: "kube-apiserver",
 			Cluster: &kops.Cluster{
 				Spec: kops.ClusterSpec{
-					KubernetesVersion: "memfs://v1.10.0-download/",
+					KubernetesVersion: "1.20.0",
 				},
 			},
-			VFS: map[string]string{
-				"memfs://v1.10.0-download/bin/linux/amd64/kube-apiserver.docker_tag": "1-10-0dockertag",
-			},
-			Expected: "k8s.gcr.io/kube-apiserver:1-10-0dockertag",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "memfs://v1.16.0-download/",
-				},
-			},
-			VFS: map[string]string{
-				"memfs://v1.16.0-download/bin/linux/amd64/kube-apiserver.docker_tag": "1-16-0dockertag",
-			},
-			Expected: "k8s.gcr.io/kube-apiserver-amd64:1-16-0dockertag",
-		},
-		{
-			Component: "kube-apiserver",
-			Cluster: &kops.Cluster{
-				Spec: kops.ClusterSpec{
-					KubernetesVersion: "1.16.0",
-				},
-			},
-			Expected: "k8s.gcr.io/kube-apiserver:v1.16.0",
+			Expected: "registry.k8s.io/kube-apiserver:v1.20.0",
 		},
 	}
 
@@ -125,10 +76,8 @@ func TestImage(t *testing.T) {
 			}
 		}
 
-		architecture := "amd64"
-
-		assetBuilder := assets.NewAssetBuilder(g.Cluster, "")
-		actual, err := Image(g.Component, architecture, &g.Cluster.Spec, assetBuilder)
+		assetBuilder := assets.NewAssetBuilder(g.Cluster, false)
+		actual, err := Image(g.Component, &g.Cluster.Spec, assetBuilder)
 		if err != nil {
 			t.Errorf("unexpected error from image %q %v: %v",
 				g.Component, g.Cluster.Spec.KubernetesVersion, err)

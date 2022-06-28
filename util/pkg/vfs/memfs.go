@@ -19,23 +19,28 @@ package vfs
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"strings"
 	"sync"
+
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
 type MemFSPath struct {
 	context  *MemFSContext
 	location string
+	acl      ACL
 
 	mutex    sync.Mutex
 	contents []byte
 	children map[string]*MemFSPath
 }
 
-var _ Path = &MemFSPath{}
+var (
+	_ Path          = &MemFSPath{}
+	_ TerraformPath = &MemFSPath{}
+)
 
 type MemFSContext struct {
 	clusterReadable bool
@@ -57,6 +62,9 @@ func (c *MemFSContext) MarkClusterReadable() {
 }
 
 func (c *MemFSPath) HasChildren() bool {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
+
 	return len(c.children) != 0
 }
 
@@ -90,16 +98,19 @@ func (p *MemFSPath) Join(relativePath ...string) Path {
 			current.children[token] = child
 		}
 		current = child
+		current.mutex.Lock()
+		defer current.mutex.Unlock()
 	}
 	return current
 }
 
 func (p *MemFSPath) WriteFile(r io.ReadSeeker, acl ACL) error {
-	data, err := ioutil.ReadAll(r)
+	data, err := io.ReadAll(r)
 	if err != nil {
 		return fmt.Errorf("error reading data: %v", err)
 	}
 	p.contents = data
+	p.acl = acl
 	return nil
 }
 
@@ -131,6 +142,9 @@ func (p *MemFSPath) WriteTo(out io.Writer) (int64, error) {
 }
 
 func (p *MemFSPath) ReadDir() ([]Path, error) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
 	var paths []Path
 	for _, f := range p.children {
 		paths = append(paths, f)
@@ -145,6 +159,9 @@ func (p *MemFSPath) ReadTree() ([]Path, error) {
 }
 
 func (p *MemFSPath) readTree(dest *[]Path) {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
 	for _, f := range p.children {
 		if !f.HasChildren() {
 			*dest = append(*dest, f)
@@ -168,4 +185,78 @@ func (p *MemFSPath) String() string {
 func (p *MemFSPath) Remove() error {
 	p.contents = nil
 	return nil
+}
+
+func (p *MemFSPath) RemoveAllVersions() error {
+	return p.Remove()
+}
+
+func (p *MemFSPath) Location() string {
+	return p.location
+}
+
+func (p *MemFSPath) IsPublic() (bool, error) {
+	if p.acl == nil {
+		return false, nil
+	}
+	s3Acl, ok := p.acl.(*S3Acl)
+	if !ok {
+		return false, fmt.Errorf("expected acl to be S3Acl, was %T", p.acl)
+	}
+	isPublic := false
+	if s3Acl.RequestACL != nil {
+		isPublic = *s3Acl.RequestACL == "public-read"
+	}
+	return isPublic, nil
+}
+
+// Terraform support for integration tests.
+
+func (p *MemFSPath) TerraformProvider() (*TerraformProvider, error) {
+	return &TerraformProvider{
+		Name: "aws",
+		Arguments: map[string]string{
+			"region": "us-test-1",
+		},
+	}, nil
+}
+
+type terraformMemFSFile struct {
+	Bucket   string                   `json:"bucket" cty:"bucket"`
+	Key      string                   `json:"key" cty:"key"`
+	Content  *terraformWriter.Literal `json:"content,omitempty" cty:"content"`
+	Acl      *string                  `json:"acl,omitempty" cty:"acl"`
+	SSE      string                   `json:"server_side_encryption,omitempty" cty:"server_side_encryption"`
+	Provider *terraformWriter.Literal `json:"provider,omitempty" cty:"provider"`
+}
+
+func (p *MemFSPath) RenderTerraform(w *terraformWriter.TerraformWriter, name string, data io.Reader, acl ACL) error {
+	bytes, err := io.ReadAll(data)
+	if err != nil {
+		return fmt.Errorf("reading data: %v", err)
+	}
+
+	content, err := w.AddFileBytes("aws_s3_object", name, "content", bytes, false)
+	if err != nil {
+		return fmt.Errorf("rendering S3 file: %v", err)
+	}
+
+	var requestAcl *string
+	if acl != nil {
+		s3Acl, ok := acl.(*S3Acl)
+		if !ok {
+			return fmt.Errorf("write to %s with ACL of unexpected type %T", p, acl)
+		}
+		requestAcl = s3Acl.RequestACL
+	}
+
+	tf := &terraformMemFSFile{
+		Bucket:   "testingBucket",
+		Key:      p.location,
+		Content:  content,
+		SSE:      "AES256",
+		Acl:      requestAcl,
+		Provider: terraformWriter.LiteralTokens("aws", "files"),
+	}
+	return w.RenderResource("aws_s3_object", name, tf)
 }

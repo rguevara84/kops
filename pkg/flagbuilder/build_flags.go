@@ -25,7 +25,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/util/pkg/reflectutils"
 )
 
@@ -44,9 +44,9 @@ func BuildFlags(options interface{}) (string, error) {
 func BuildFlagsList(options interface{}) ([]string, error) {
 	var flags []string
 
-	walker := func(path string, field *reflect.StructField, val reflect.Value) error {
+	walker := func(path *reflectutils.FieldPath, field *reflect.StructField, val reflect.Value) error {
 		if field == nil {
-			klog.V(8).Infof("ignoring non-field: %s", path)
+			klog.V(10).Infof("ignoring non-field: %s", path)
 			return nil
 		}
 		tag := field.Tag.Get("flag")
@@ -205,7 +205,7 @@ func BuildFlagsList(options interface{}) ([]string, error) {
 
 		return reflectutils.SkipReflection
 	}
-	err := reflectutils.ReflectRecursive(reflect.ValueOf(options), walker)
+	err := reflectutils.ReflectRecursive(reflect.ValueOf(options), walker, &reflectutils.ReflectOptions{DeprecatedDoubleVisit: true})
 	if err != nil {
 		return nil, fmt.Errorf("BuildFlagsList to reflect value: %s", err)
 	}

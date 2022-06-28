@@ -23,10 +23,10 @@ import (
 	"fmt"
 	"time"
 
-	compute "google.golang.org/api/compute/v0.beta"
+	compute "google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -101,7 +101,7 @@ func waitForOp(op *compute.Operation, getOperation func(operationName string) (*
 	opName := op.Name
 	return wait.Poll(operationPollInterval, operationPollTimeoutDuration, func() (bool, error) {
 		start := time.Now()
-		//gce.operationPollRateLimiter.Accept()
+		// gce.operationPollRateLimiter.Accept()
 		duration := time.Since(start)
 		if duration > 5*time.Second {
 			klog.Infof("pollOperation: throttled %v for %v", duration, opName)

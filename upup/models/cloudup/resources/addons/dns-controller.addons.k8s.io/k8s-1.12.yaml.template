@@ -6,9 +6,11 @@ metadata:
   labels:
     k8s-addon: dns-controller.addons.k8s.io
     k8s-app: dns-controller
-    version: v1.16.0-alpha.1
+    version: v1.24.0-beta.1
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       k8s-app: dns-controller
@@ -17,34 +19,52 @@ spec:
       labels:
         k8s-addon: dns-controller.addons.k8s.io
         k8s-app: dns-controller
-        version: v1.16.0-alpha.1
+        version: v1.24.0-beta.1
       annotations:
         scheduler.alpha.kubernetes.io/critical-pod: ''
     spec:
+      priorityClassName: system-cluster-critical
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+            - matchExpressions:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
       tolerations:
-      - key: "node-role.kubernetes.io/master"
-        effect: NoSchedule
-      nodeSelector:
-        node-role.kubernetes.io/master: ""
+      - key: node.cloudprovider.kubernetes.io/uninitialized
+        operator: Exists
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+      - key: node-role.kubernetes.io/master
+        operator: Exists
       dnsPolicy: Default  # Don't use cluster DNS (we are likely running before kube-dns)
       hostNetwork: true
       serviceAccount: dns-controller
+      nodeSelector: null
       containers:
       - name: dns-controller
-        image: kope/dns-controller:1.16.0-alpha.1
-        command:
+        image: registry.k8s.io/kops/dns-controller:1.24.0-beta.1
+        args:
 {{ range $arg := DnsControllerArgv }}
         - "{{ $arg }}"
 {{ end }}
-{{- if .EgressProxy }}
+        command: null
         env:
+        - name: KUBERNETES_SERVICE_HOST
+          value: "127.0.0.1"
+{{- if .EgressProxy }}
 {{ range $name, $value := ProxyEnv }}
         - name: {{ $name }}
           value: {{ $value }}
 {{ end }}
 {{- end }}
-{{- if eq .CloudProvider "digitalocean" }}
-        env:
+{{- if eq GetCloudProvider "digitalocean" }}
         - name: DIGITALOCEAN_ACCESS_TOKEN
           valueFrom:
             secretKeyRef:
@@ -55,6 +75,8 @@ spec:
           requests:
             cpu: 50m
             memory: 50Mi
+        securityContext:
+          runAsNonRoot: true
 
 ---
 
@@ -88,7 +110,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - "extensions"
+  - "networking.k8s.io"
   resources:
   - ingresses
   verbs:

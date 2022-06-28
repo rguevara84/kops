@@ -17,26 +17,23 @@ limitations under the License.
 package main
 
 import (
-	"io/ioutil"
+	"os"
 	"path"
 	"testing"
 
-	"github.com/blang/semver"
+	"github.com/blang/semver/v4"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/tests/integration/channel/simple"
+	"k8s.io/kops/util/pkg/architectures"
 )
 
 // TestKopsUpgrades tests the version logic for kops versions
 func TestKopsUpgrades(t *testing.T) {
-	srcDir := "simple"
-	sourcePath := path.Join(srcDir, "channel.yaml")
-	sourceBytes, err := ioutil.ReadFile(sourcePath)
-	if err != nil {
-		t.Fatalf("unexpected error reading sourcePath %q: %v", sourcePath, err)
-	}
+	sourcePath := "simple/channel.yaml"
 
-	channel, err := kops.ParseChannel(sourceBytes)
+	channel, err := simple.NewMockChannel(sourcePath)
 	if err != nil {
-		t.Fatalf("failed to parse channel: %v", err)
+		t.Fatalf("failed to create channel: %v", err)
 	}
 
 	grid := []struct {
@@ -119,7 +116,7 @@ func TestKopsUpgrades(t *testing.T) {
 func TestKubernetesUpgrades(t *testing.T) {
 	srcDir := "simple"
 	sourcePath := path.Join(srcDir, "channel.yaml")
-	sourceBytes, err := ioutil.ReadFile(sourcePath)
+	sourceBytes, err := os.ReadFile(sourcePath)
 	if err != nil {
 		t.Fatalf("unexpected error reading sourcePath %q: %v", sourcePath, err)
 	}
@@ -213,7 +210,7 @@ func TestKubernetesUpgrades(t *testing.T) {
 func TestFindImage(t *testing.T) {
 	srcDir := "simple"
 	sourcePath := path.Join(srcDir, "channel.yaml")
-	sourceBytes, err := ioutil.ReadFile(sourcePath)
+	sourceBytes, err := os.ReadFile(sourcePath)
 	if err != nil {
 		t.Fatalf("unexpected error reading sourcePath %q: %v", sourcePath, err)
 	}
@@ -225,21 +222,35 @@ func TestFindImage(t *testing.T) {
 
 	grid := []struct {
 		KubernetesVersion string
+		Architecture      string
 		ExpectedImage     string
 	}{
 		{
-			KubernetesVersion: "1.4.4",
-			ExpectedImage:     "kope.io/k8s-1.4-debian-jessie-amd64-hvm-ebs-2016-10-21",
+			KubernetesVersion: "1.1.0",
+			Architecture:      "amd64",
+			ExpectedImage:     "kope.io/k8s-1.11-debian-stretch-amd64-hvm-ebs-2021-02-05",
 		},
 		{
-			KubernetesVersion: "1.5.1",
-			ExpectedImage:     "kope.io/k8s-1.5-debian-jessie-amd64-hvm-ebs-2017-01-09",
+			KubernetesVersion: "1.17.2",
+			Architecture:      "amd64",
+			ExpectedImage:     "kope.io/k8s-1.17-debian-stretch-amd64-hvm-ebs-2021-02-05",
+		},
+		{
+			KubernetesVersion: "1.19.1",
+			Architecture:      "amd64",
+			ExpectedImage:     "099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210315",
+		},
+		{
+			KubernetesVersion: "1.19.1",
+			Architecture:      "arm64",
+			ExpectedImage:     "099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-arm64-server-20210315",
 		},
 	}
 	for _, g := range grid {
 		kubernetesVersion := semver.MustParse(g.KubernetesVersion)
+		architecture := architectures.Architecture(g.Architecture)
 
-		image := channel.FindImage(kops.CloudProviderAWS, kubernetesVersion)
+		image := channel.FindImage(kops.CloudProviderAWS, kubernetesVersion, architecture)
 		name := ""
 		if image != nil {
 			name = image.Name
@@ -254,7 +265,7 @@ func TestFindImage(t *testing.T) {
 func TestRecommendedKubernetesVersion(t *testing.T) {
 	srcDir := "simple"
 	sourcePath := path.Join(srcDir, "channel.yaml")
-	sourceBytes, err := ioutil.ReadFile(sourcePath)
+	sourceBytes, err := os.ReadFile(sourcePath)
 	if err != nil {
 		t.Fatalf("unexpected error reading sourcePath %q: %v", sourcePath, err)
 	}
@@ -307,7 +318,6 @@ func TestOrdering(t *testing.T) {
 // TestChannelsSelfConsistent tests the channels have version recommendations that are consistent
 // i.e. we don't recommend 1.5.2 and then recommend upgrading it to 1.5.4
 func TestChannelsSelfConsistent(t *testing.T) {
-
 	grid := []struct {
 		KopsVersion               string
 		Channel                   string
@@ -349,7 +359,7 @@ func TestChannelsSelfConsistent(t *testing.T) {
 	for _, g := range grid {
 		srcDir := "../../../channels/"
 		sourcePath := path.Join(srcDir, g.Channel)
-		sourceBytes, err := ioutil.ReadFile(sourcePath)
+		sourceBytes, err := os.ReadFile(sourcePath)
 		if err != nil {
 			t.Fatalf("unexpected error reading sourcePath %q: %v", sourcePath, err)
 		}
@@ -390,4 +400,28 @@ func semverString(sv *semver.Version) string {
 		return ""
 	}
 	return sv.String()
+}
+
+// All Images in channel should have a specified upstream image prefix
+func TestChannelImages(t *testing.T) {
+	for _, channel := range []string{"stable", "alpha"} {
+		t.Run(channel+"-channel", func(t *testing.T) {
+			sourcePath := "../../../channels/" + channel
+			sourceBytes, err := os.ReadFile(sourcePath)
+			if err != nil {
+				t.Fatalf("unexpected error reading sourcePath %q: %v", sourcePath, err)
+			}
+
+			channel, err := kops.ParseChannel(sourceBytes)
+			if err != nil {
+				t.Fatalf("failed to parse channel: %v", err)
+			}
+
+			for _, image := range channel.Spec.Images {
+				if !channel.HasUpstreamImagePrefix(image.Name) {
+					t.Errorf("unknown image prefix: %q", image.Name)
+				}
+			}
+		})
+	}
 }

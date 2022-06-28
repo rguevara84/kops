@@ -20,8 +20,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"path/filepath"
-	"strings"
-	"text/template"
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
@@ -35,11 +33,6 @@ type FileAssetsBuilder struct {
 
 var _ fi.ModelBuilder = &FileAssetsBuilder{}
 
-var templateFuncs = template.FuncMap{
-	"split": strings.Split,
-	"join":  strings.Join,
-}
-
 // Build is responsible for writing out the file assets from cluster and instanceGroup
 func (f *FileAssetsBuilder) Build(c *fi.ModelBuilderContext) error {
 	// used to keep track of previous file, so a instanceGroup can override a cluster wide one
@@ -52,28 +45,12 @@ func (f *FileAssetsBuilder) Build(c *fi.ModelBuilderContext) error {
 		Mode: s("0755"),
 	})
 
-	// do we have any instanceGroup file assets
-	if f.InstanceGroup.Spec.FileAssets != nil {
-		if err := f.buildFileAssets(c, f.InstanceGroup.Spec.FileAssets, tracker); err != nil {
-			return err
-		}
-	}
-	if f.Cluster.Spec.FileAssets != nil {
-		if err := f.buildFileAssets(c, f.Cluster.Spec.FileAssets, tracker); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	return f.buildFileAssets(c, f.NodeupConfig.FileAssets, tracker)
 }
 
 // buildFileAssets is responsible for rendering the file assets to disk
 func (f *FileAssetsBuilder) buildFileAssets(c *fi.ModelBuilderContext, assets []kops.FileAssetSpec, tracker map[string]bool) error {
 	for _, asset := range assets {
-		// @check if the file asset applies to us. If no roles applied we assume its applied to all roles
-		if len(asset.Roles) > 0 && !containsRole(f.InstanceGroup.Spec.Role, asset.Roles) {
-			continue
-		}
 		// @check if e have a path and if not use the default path
 		assetPath := asset.Path
 		if assetPath == "" {
@@ -90,9 +67,14 @@ func (f *FileAssetsBuilder) buildFileAssets(c *fi.ModelBuilderContext, assets []
 		if asset.IsBase64 {
 			decoded, err := base64.RawStdEncoding.DecodeString(content)
 			if err != nil {
-				return fmt.Errorf("Failed on file asset: %s is invalid, unable to decode base64, error: %q", asset.Name, err)
+				return fmt.Errorf("failed on file asset: %s is invalid, unable to decode base64, error: %q", asset.Name, err)
 			}
 			content = string(decoded)
+		}
+
+		// If not specified, the default Mode is 0440
+		if asset.Mode == "" {
+			asset.Mode = "0440"
 		}
 
 		// We use EnsureTask so that we don't have to check if the asset directories have already been done
@@ -104,7 +86,7 @@ func (f *FileAssetsBuilder) buildFileAssets(c *fi.ModelBuilderContext, assets []
 
 		c.AddTask(&nodetasks.File{
 			Contents: fi.NewStringResource(content),
-			Mode:     s("0440"),
+			Mode:     s(asset.Mode),
 			Path:     assetPath,
 			Type:     nodetasks.FileType_File,
 		})

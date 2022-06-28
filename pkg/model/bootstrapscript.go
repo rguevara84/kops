@@ -18,44 +18,113 @@ package model
 
 import (
 	"bytes"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
-	"text/template"
 
-	"github.com/ghodss/yaml"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/pkg/apis/kops/model"
+	"k8s.io/kops/upup/pkg/fi/utils"
+	"sigs.k8s.io/yaml"
 
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/nodeup"
 	"k8s.io/kops/pkg/model/resources"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
+	"k8s.io/kops/upup/pkg/fi/fitasks"
+	"k8s.io/kops/util/pkg/architectures"
+	"k8s.io/kops/util/pkg/mirrors"
 )
 
-// BootstrapScript creates the bootstrap script
-type BootstrapScript struct {
-	NodeUpSource        string
-	NodeUpSourceHash    string
-	NodeUpConfigBuilder func(ig *kops.InstanceGroup) (*nodeup.Config, error)
+type NodeUpConfigBuilder interface {
+	BuildConfig(ig *kops.InstanceGroup, apiserverAdditionalIPs []string, keysets map[string]*fi.Keyset) (*nodeup.Config, *nodeup.BootConfig, error)
 }
 
-// KubeEnv returns the nodeup config for the instance group
-func (b *BootstrapScript) KubeEnv(ig *kops.InstanceGroup) (string, error) {
-	config, err := b.NodeUpConfigBuilder(ig)
+// BootstrapScriptBuilder creates the bootstrap script
+type BootstrapScriptBuilder struct {
+	*KopsModelContext
+	Lifecycle           fi.Lifecycle
+	NodeUpAssets        map[architectures.Architecture]*mirrors.MirroredAsset
+	NodeUpConfigBuilder NodeUpConfigBuilder
+	Cluster             *kops.Cluster
+}
+
+type BootstrapScript struct {
+	Name      string
+	Lifecycle fi.Lifecycle
+	ig        *kops.InstanceGroup
+	builder   *BootstrapScriptBuilder
+	resource  fi.TaskDependentResource
+	// alternateNameTasks are tasks that contribute api-server IP addresses.
+	alternateNameTasks []fi.HasAddress
+
+	// caTasks hold the CA tasks, for dependency analysis.
+	caTasks map[string]*fitasks.Keypair
+
+	// nodeupConfig contains the nodeup config.
+	nodeupConfig fi.TaskDependentResource
+}
+
+var (
+	_ fi.Task            = &BootstrapScript{}
+	_ fi.HasName         = &BootstrapScript{}
+	_ fi.HasDependencies = &BootstrapScript{}
+)
+
+// kubeEnv returns the boot config for the instance group
+func (b *BootstrapScript) kubeEnv(ig *kops.InstanceGroup, c *fi.Context) (string, error) {
+	var alternateNames []string
+
+	for _, hasAddress := range b.alternateNameTasks {
+		addresses, err := hasAddress.FindAddresses(c)
+		if err != nil {
+			return "", fmt.Errorf("error finding address for %v: %v", hasAddress, err)
+		}
+		if len(addresses) == 0 {
+			klog.Warningf("Task did not have an address: %v", hasAddress)
+			continue
+		}
+		for _, address := range addresses {
+			klog.V(8).Infof("Resolved alternateName %q for %q", address, hasAddress)
+			alternateNames = append(alternateNames, address)
+		}
+	}
+
+	sort.Strings(alternateNames)
+
+	keysets := make(map[string]*fi.Keyset)
+	for _, caTask := range b.caTasks {
+		name := *caTask.Name
+		keyset := caTask.Keyset()
+		if keyset == nil {
+			return "", fmt.Errorf("failed to get keyset from %q", name)
+		}
+		keysets[name] = keyset
+	}
+	config, bootConfig, err := b.builder.NodeUpConfigBuilder.BuildConfig(ig, alternateNames, keysets)
 	if err != nil {
 		return "", err
 	}
 
-	data, err := kops.ToRawYaml(config)
+	configData, err := utils.YamlMarshal(config)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("error converting nodeup config to yaml: %v", err)
+	}
+	sum256 := sha256.Sum256(configData)
+	bootConfig.NodeupConfigHash = base64.StdEncoding.EncodeToString(sum256[:])
+	b.nodeupConfig.Resource = fi.NewBytesResource(configData)
+
+	bootConfigData, err := utils.YamlMarshal(bootConfig)
+	if err != nil {
+		return "", fmt.Errorf("error converting boot config to yaml: %v", err)
 	}
 
-	return string(data), nil
+	return string(bootConfigData), nil
 }
 
 func (b *BootstrapScript) buildEnvironmentVariables(cluster *kops.Cluster) (map[string]string, error) {
@@ -72,29 +141,58 @@ func (b *BootstrapScript) buildEnvironmentVariables(cluster *kops.Cluster) (map[
 		env["S3_SECRET_ACCESS_KEY"] = os.Getenv("S3_SECRET_ACCESS_KEY")
 	}
 
-	// Pass in required credentials when using user-defined swift endpoint
-	if os.Getenv("OS_AUTH_URL") != "" {
-		for _, envVar := range []string{
+	if cluster.Spec.GetCloudProvider() == kops.CloudProviderOpenstack {
+
+		osEnvs := []string{
 			"OS_TENANT_ID", "OS_TENANT_NAME", "OS_PROJECT_ID", "OS_PROJECT_NAME",
 			"OS_PROJECT_DOMAIN_NAME", "OS_PROJECT_DOMAIN_ID",
 			"OS_DOMAIN_NAME", "OS_DOMAIN_ID",
-			"OS_USERNAME",
-			"OS_PASSWORD",
 			"OS_AUTH_URL",
 			"OS_REGION_NAME",
-		} {
-			env[envVar] = fmt.Sprintf("'%s'", os.Getenv(envVar))
+		}
+
+		hasCCM := cluster.Spec.ExternalCloudControllerManager != nil
+		appCreds := os.Getenv("OS_APPLICATION_CREDENTIAL_ID") != "" && os.Getenv("OS_APPLICATION_CREDENTIAL_SECRET") != ""
+		if !hasCCM && appCreds {
+			klog.Warning("application credentials only supported when using external cloud controller manager. Continuing with passwords.")
+		}
+
+		if hasCCM && appCreds {
+			osEnvs = append(osEnvs,
+				"OS_APPLICATION_CREDENTIAL_ID",
+				"OS_APPLICATION_CREDENTIAL_SECRET",
+			)
+		} else {
+			klog.Warning("exporting username and password. Consider using application credentials instead.")
+			osEnvs = append(osEnvs,
+				"OS_USERNAME",
+				"OS_PASSWORD",
+			)
+		}
+
+		// Pass in required credentials when using user-defined swift endpoint
+		if os.Getenv("OS_AUTH_URL") != "" {
+			for _, envVar := range osEnvs {
+				env[envVar] = fmt.Sprintf("'%s'", os.Getenv(envVar))
+			}
 		}
 	}
 
-	if kops.CloudProviderID(cluster.Spec.CloudProvider) == kops.CloudProviderDO {
+	if cluster.Spec.GetCloudProvider() == kops.CloudProviderDO {
 		doToken := os.Getenv("DIGITALOCEAN_ACCESS_TOKEN")
 		if doToken != "" {
 			env["DIGITALOCEAN_ACCESS_TOKEN"] = doToken
 		}
 	}
 
-	if kops.CloudProviderID(cluster.Spec.CloudProvider) == kops.CloudProviderAWS {
+	if cluster.Spec.GetCloudProvider() == kops.CloudProviderHetzner {
+		hcloudToken := os.Getenv("HCLOUD_TOKEN")
+		if hcloudToken != "" {
+			env["HCLOUD_TOKEN"] = hcloudToken
+		}
+	}
+
+	if cluster.Spec.GetCloudProvider() == kops.CloudProviderAWS {
 		region, err := awsup.FindRegion(cluster)
 		if err != nil {
 			return nil, err
@@ -106,20 +204,11 @@ func (b *BootstrapScript) buildEnvironmentVariables(cluster *kops.Cluster) (map[
 		}
 	}
 
-	if kops.CloudProviderID(cluster.Spec.CloudProvider) == kops.CloudProviderALI {
-		region := os.Getenv("OSS_REGION")
-		if region != "" {
-			env["OSS_REGION"] = os.Getenv("OSS_REGION")
-		}
-
-		aliID := os.Getenv("ALIYUN_ACCESS_KEY_ID")
-		if aliID != "" {
-			env["ALIYUN_ACCESS_KEY_ID"] = os.Getenv("ALIYUN_ACCESS_KEY_ID")
-		}
-
-		aliSecret := os.Getenv("ALIYUN_ACCESS_KEY_SECRET")
-		if aliSecret != "" {
-			env["ALIYUN_ACCESS_KEY_SECRET"] = os.Getenv("ALIYUN_ACCESS_KEY_SECRET")
+	if cluster.Spec.GetCloudProvider() == kops.CloudProviderAzure {
+		env["AZURE_STORAGE_ACCOUNT"] = os.Getenv("AZURE_STORAGE_ACCOUNT")
+		azureEnv := os.Getenv("AZURE_ENVIRONMENT")
+		if azureEnv != "" {
+			env["AZURE_ENVIRONMENT"] = os.Getenv("AZURE_ENVIRONMENT")
 		}
 	}
 
@@ -128,58 +217,144 @@ func (b *BootstrapScript) buildEnvironmentVariables(cluster *kops.Cluster) (map[
 
 // ResourceNodeUp generates and returns a nodeup (bootstrap) script from a
 // template file, substituting in specific env vars & cluster spec configuration
-func (b *BootstrapScript) ResourceNodeUp(ig *kops.InstanceGroup, cluster *kops.Cluster) (*fi.ResourceHolder, error) {
-	// Bastions can have AdditionalUserData, but if there isn't any skip this part
-	if ig.IsBastion() && len(ig.Spec.AdditionalUserData) == 0 {
-		return nil, nil
+func (b *BootstrapScriptBuilder) ResourceNodeUp(c *fi.ModelBuilderContext, ig *kops.InstanceGroup) (fi.Resource, error) {
+	keypairs := []string{"kubernetes-ca", "etcd-clients-ca"}
+	for _, etcdCluster := range b.Cluster.Spec.EtcdClusters {
+		k := etcdCluster.Name
+		keypairs = append(keypairs, "etcd-manager-ca-"+k, "etcd-peers-ca-"+k)
+		if k != "events" && k != "main" {
+			keypairs = append(keypairs, "etcd-clients-ca-"+k)
+		}
 	}
 
-	functions := template.FuncMap{
-		"NodeUpSource": func() string {
-			return b.NodeUpSource
-		},
-		"NodeUpSourceHash": func() string {
-			return b.NodeUpSourceHash
-		},
-		"KubeEnv": func() (string, error) {
-			return b.KubeEnv(ig)
-		},
+	if model.UseCiliumEtcd(b.Cluster) && !model.UseKopsControllerForNodeBootstrap(b.Cluster) {
+		keypairs = append(keypairs, "etcd-client-cilium")
+	}
+	if ig.HasAPIServer() {
+		keypairs = append(keypairs, "apiserver-aggregator-ca", "service-account", "etcd-clients-ca")
+	} else if !model.UseKopsControllerForNodeBootstrap(b.Cluster) {
+		keypairs = append(keypairs, "kubelet", "kube-proxy")
+		if b.Cluster.Spec.Networking.Kuberouter != nil {
+			keypairs = append(keypairs, "kube-router")
+		}
+	}
 
-		"EnvironmentVariables": func() (string, error) {
-			env, err := b.buildEnvironmentVariables(cluster)
+	if ig.IsBastion() {
+		keypairs = nil
+
+		// Bastions can have AdditionalUserData, but if there isn't any skip this part
+		if len(ig.Spec.AdditionalUserData) == 0 {
+			return fi.NewStringResource(""), nil
+		}
+	}
+
+	caTasks := map[string]*fitasks.Keypair{}
+	for _, keypair := range keypairs {
+		caTaskObject, found := c.Tasks["Keypair/"+keypair]
+		if !found {
+			return nil, fmt.Errorf("keypair/%s task not found", keypair)
+		}
+		caTasks[keypair] = caTaskObject.(*fitasks.Keypair)
+	}
+
+	task := &BootstrapScript{
+		Name:      ig.Name,
+		Lifecycle: b.Lifecycle,
+		ig:        ig,
+		builder:   b,
+		caTasks:   caTasks,
+	}
+	task.resource.Task = task
+	task.nodeupConfig.Task = task
+	c.AddTask(task)
+
+	c.AddTask(&fitasks.ManagedFile{
+		Name:      fi.String("nodeupconfig-" + ig.Name),
+		Lifecycle: b.Lifecycle,
+		Location:  fi.String("igconfig/" + strings.ToLower(string(ig.Spec.Role)) + "/" + ig.Name + "/nodeupconfig.yaml"),
+		Contents:  &task.nodeupConfig,
+	})
+	return &task.resource, nil
+}
+
+func (b *BootstrapScript) GetName() *string {
+	return &b.Name
+}
+
+func (b *BootstrapScript) GetDependencies(tasks map[string]fi.Task) []fi.Task {
+	var deps []fi.Task
+
+	for _, task := range tasks {
+		if hasAddress, ok := task.(fi.HasAddress); ok && hasAddress.IsForAPIServer() {
+			deps = append(deps, task)
+			b.alternateNameTasks = append(b.alternateNameTasks, hasAddress)
+		}
+	}
+
+	for _, task := range b.caTasks {
+		deps = append(deps, task)
+	}
+
+	return deps
+}
+
+func (b *BootstrapScript) Run(c *fi.Context) error {
+	if b.Lifecycle == fi.LifecycleIgnore {
+		return nil
+	}
+
+	config, err := b.kubeEnv(b.ig, c)
+	if err != nil {
+		return err
+	}
+
+	var nodeupScript resources.NodeUpScript
+	nodeupScript.NodeUpAssets = b.builder.NodeUpAssets
+	nodeupScript.KubeEnv = config
+
+	{
+		nodeupScript.EnvironmentVariables = func() (string, error) {
+			env, err := b.buildEnvironmentVariables(c.Cluster)
 			if err != nil {
 				return "", err
 			}
+
+			// Sort keys to have a stable sequence of "export xx=xxx"" statements
+			var keys []string
+			for k := range env {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+
 			var b bytes.Buffer
-			for k, v := range env {
-				b.WriteString(fmt.Sprintf("export %s=%s\n", k, v))
+			for _, k := range keys {
+				b.WriteString(fmt.Sprintf("export %s=%s\n", k, env[k]))
 			}
 			return b.String(), nil
-		},
+		}
 
-		"ProxyEnv": func() string {
-			return b.createProxyEnv(cluster.Spec.EgressProxy)
-		},
+		nodeupScript.ProxyEnv = func() (string, error) {
+			return b.createProxyEnv(c.Cluster.Spec.EgressProxy)
+		}
 
-		"ClusterSpec": func() (string, error) {
-			cs := cluster.Spec
+		nodeupScript.ClusterSpec = func() (string, error) {
+			cs := c.Cluster.Spec
 
 			spec := make(map[string]interface{})
 			spec["cloudConfig"] = cs.CloudConfig
+			spec["containerRuntime"] = cs.ContainerRuntime
+			spec["containerd"] = cs.Containerd
 			spec["docker"] = cs.Docker
 			spec["kubeProxy"] = cs.KubeProxy
 			spec["kubelet"] = cs.Kubelet
 
-			if cs.NodeAuthorization != nil {
-				spec["nodeAuthorization"] = cs.NodeAuthorization
-			}
 			if cs.KubeAPIServer != nil && cs.KubeAPIServer.EnableBootstrapAuthToken != nil {
 				spec["kubeAPIServer"] = map[string]interface{}{
 					"enableBootstrapAuthToken": cs.KubeAPIServer.EnableBootstrapAuthToken,
 				}
 			}
 
-			if ig.IsMaster() {
+			if b.ig.IsMaster() {
 				spec["encryptionConfig"] = cs.EncryptionConfig
 				spec["etcdClusters"] = make(map[string]kops.EtcdClusterSpec)
 				spec["kubeAPIServer"] = cs.KubeAPIServer
@@ -189,35 +364,23 @@ func (b *BootstrapScript) ResourceNodeUp(ig *kops.InstanceGroup, cluster *kops.C
 
 				for _, etcdCluster := range cs.EtcdClusters {
 					c := kops.EtcdClusterSpec{
-						Image:   etcdCluster.Image,
-						Version: etcdCluster.Version,
+						Image:         etcdCluster.Image,
+						Version:       etcdCluster.Version,
+						Manager:       etcdCluster.Manager,
+						CPURequest:    etcdCluster.CPURequest,
+						MemoryRequest: etcdCluster.MemoryRequest,
 					}
-					// if the user has not specified memory or cpu allotments for etcd, do not
-					// apply one.  Described in PR #6313.
-					if etcdCluster.CPURequest != nil {
-						c.CPURequest = etcdCluster.CPURequest
-					}
-					if etcdCluster.MemoryRequest != nil {
-						c.MemoryRequest = etcdCluster.MemoryRequest
+					for _, etcdMember := range etcdCluster.Members {
+						if fi.StringValue(etcdMember.InstanceGroup) == b.ig.Name && etcdMember.VolumeSize != nil {
+							m := kops.EtcdMemberSpec{
+								Name:       etcdMember.Name,
+								VolumeSize: etcdMember.VolumeSize,
+							}
+							c.Members = append(c.Members, m)
+						}
 					}
 					spec["etcdClusters"].(map[string]kops.EtcdClusterSpec)[etcdCluster.Name] = c
 				}
-			}
-
-			hooks, err := b.getRelevantHooks(cs.Hooks, ig.Spec.Role)
-			if err != nil {
-				return "", err
-			}
-			if len(hooks) > 0 {
-				spec["hooks"] = hooks
-			}
-
-			fileAssets, err := b.getRelevantFileAssets(cs.FileAssets, ig.Spec.Role)
-			if err != nil {
-				return "", err
-			}
-			if len(fileAssets) > 0 {
-				spec["fileAssets"] = fileAssets
 			}
 
 			content, err := yaml.Marshal(spec)
@@ -225,149 +388,39 @@ func (b *BootstrapScript) ResourceNodeUp(ig *kops.InstanceGroup, cluster *kops.C
 				return "", fmt.Errorf("error converting cluster spec to yaml for inclusion within bootstrap script: %v", err)
 			}
 			return string(content), nil
-		},
-
-		"IGSpec": func() (string, error) {
-			spec := make(map[string]interface{})
-			spec["kubelet"] = ig.Spec.Kubelet
-			spec["nodeLabels"] = ig.Spec.NodeLabels
-			spec["taints"] = ig.Spec.Taints
-
-			hooks, err := b.getRelevantHooks(ig.Spec.Hooks, ig.Spec.Role)
-			if err != nil {
-				return "", err
-			}
-			if len(hooks) > 0 {
-				spec["hooks"] = hooks
-			}
-
-			fileAssets, err := b.getRelevantFileAssets(ig.Spec.FileAssets, ig.Spec.Role)
-			if err != nil {
-				return "", err
-			}
-			if len(fileAssets) > 0 {
-				spec["fileAssets"] = fileAssets
-			}
-
-			content, err := yaml.Marshal(spec)
-			if err != nil {
-				return "", fmt.Errorf("error converting instancegroup spec to yaml for inclusion within bootstrap script: %v", err)
-			}
-			return string(content), nil
-		},
+		}
 	}
 
-	awsNodeUpTemplate, err := resources.AWSNodeUpTemplate(ig)
+	nodeupScript.CompressUserData = fi.BoolValue(b.ig.Spec.CompressUserData)
+
+	// By setting some sysctls early, we avoid broken configurations that prevent nodeup download.
+	// See https://github.com/kubernetes/kops/issues/10206 for details.
+	nodeupScript.SetSysctls = setSysctls()
+
+	nodeupScript.CloudProvider = string(c.Cluster.Spec.GetCloudProvider())
+
+	nodeupScriptResource, err := nodeupScript.Build()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	templateResource, err := NewTemplateResource("nodeup", awsNodeUpTemplate, functions, nil)
-	if err != nil {
-		return nil, err
-	}
+	b.resource.Resource = fi.FunctionToResource(func() ([]byte, error) {
+		nodeupScript, err := fi.ResourceAsString(nodeupScriptResource)
+		if err != nil {
+			return nil, err
+		}
 
-	return fi.WrapResource(templateResource), nil
+		awsUserData, err := resources.AWSMultipartMIME(nodeupScript, b.ig)
+		if err != nil {
+			return nil, err
+		}
+
+		return []byte(awsUserData), nil
+	})
+	return nil
 }
 
-// getRelevantHooks returns a list of hooks to be applied to the instance group,
-// with the Manifest and ExecContainer Commands fingerprinted to reduce size
-func (b *BootstrapScript) getRelevantHooks(allHooks []kops.HookSpec, role kops.InstanceGroupRole) ([]kops.HookSpec, error) {
-	relevantHooks := []kops.HookSpec{}
-	for _, hook := range allHooks {
-		if len(hook.Roles) == 0 {
-			relevantHooks = append(relevantHooks, hook)
-			continue
-		}
-		for _, hookRole := range hook.Roles {
-			if role == hookRole {
-				relevantHooks = append(relevantHooks, hook)
-				break
-			}
-		}
-	}
-
-	hooks := []kops.HookSpec{}
-	if len(relevantHooks) > 0 {
-		for _, hook := range relevantHooks {
-			if hook.Manifest != "" {
-				manifestFingerprint, err := b.computeFingerprint(hook.Manifest)
-				if err != nil {
-					return nil, err
-				}
-				hook.Manifest = manifestFingerprint + " (fingerprint)"
-			}
-
-			if hook.ExecContainer != nil && hook.ExecContainer.Command != nil {
-				execContainerCommandFingerprint, err := b.computeFingerprint(strings.Join(hook.ExecContainer.Command[:], " "))
-				if err != nil {
-					return nil, err
-				}
-
-				execContainerAction := &kops.ExecContainerAction{
-					Command:     []string{execContainerCommandFingerprint + " (fingerprint)"},
-					Environment: hook.ExecContainer.Environment,
-					Image:       hook.ExecContainer.Image,
-				}
-				hook.ExecContainer = execContainerAction
-			}
-
-			hook.Roles = nil
-			hooks = append(hooks, hook)
-		}
-	}
-
-	return hooks, nil
-}
-
-// getRelevantFileAssets returns a list of file assets to be applied to the
-// instance group, with the Content fingerprinted to reduce size
-func (b *BootstrapScript) getRelevantFileAssets(allFileAssets []kops.FileAssetSpec, role kops.InstanceGroupRole) ([]kops.FileAssetSpec, error) {
-	relevantFileAssets := []kops.FileAssetSpec{}
-	for _, fileAsset := range allFileAssets {
-		if len(fileAsset.Roles) == 0 {
-			relevantFileAssets = append(relevantFileAssets, fileAsset)
-			continue
-		}
-		for _, fileAssetRole := range fileAsset.Roles {
-			if role == fileAssetRole {
-				relevantFileAssets = append(relevantFileAssets, fileAsset)
-				break
-			}
-		}
-	}
-
-	fileAssets := []kops.FileAssetSpec{}
-	if len(relevantFileAssets) > 0 {
-		for _, fileAsset := range relevantFileAssets {
-			if fileAsset.Content != "" {
-				contentFingerprint, err := b.computeFingerprint(fileAsset.Content)
-				if err != nil {
-					return nil, err
-				}
-				fileAsset.Content = contentFingerprint + " (fingerprint)"
-			}
-
-			fileAsset.Roles = nil
-			fileAssets = append(fileAssets, fileAsset)
-		}
-	}
-
-	return fileAssets, nil
-}
-
-// computeFingerprint takes a string and returns a base64 encoded fingerprint
-func (b *BootstrapScript) computeFingerprint(content string) (string, error) {
-	hasher := sha1.New()
-
-	if _, err := hasher.Write([]byte(content)); err != nil {
-		return "", fmt.Errorf("error computing fingerprint hash: %v", err)
-	}
-
-	return base64.StdEncoding.EncodeToString(hasher.Sum(nil)), nil
-}
-
-func (b *BootstrapScript) createProxyEnv(ps *kops.EgressProxySpec) string {
+func (b *BootstrapScript) createProxyEnv(ps *kops.EgressProxySpec) (string, error) {
 	var buffer bytes.Buffer
 
 	if ps != nil && ps.HTTPProxy.Host != "" {
@@ -394,7 +447,7 @@ func (b *BootstrapScript) createProxyEnv(ps *kops.EgressProxySpec) string {
 		// Load the proxy environment variables
 		buffer.WriteString("while read in; do export $in; done < /etc/environment\n")
 
-		// Set env variables for package manager depending on OS Distribution (N/A for CoreOS)
+		// Set env variables for package manager depending on OS Distribution (N/A for Flatcar)
 		// Note: Nodeup will source the `/etc/environment` file within docker config in the correct location
 		buffer.WriteString("case `cat /proc/version` in\n")
 		buffer.WriteString("*[Dd]ebian*)\n")
@@ -402,7 +455,7 @@ func (b *BootstrapScript) createProxyEnv(ps *kops.EgressProxySpec) string {
 		buffer.WriteString("*[Uu]buntu*)\n")
 		buffer.WriteString(`  echo "Acquire::http::Proxy \"${http_proxy}\";" > /etc/apt/apt.conf.d/30proxy ;;` + "\n")
 		buffer.WriteString("*[Rr]ed[Hh]at*)\n")
-		buffer.WriteString(`  echo "http_proxy=${http_proxy}" >> /etc/yum.conf ;;` + "\n")
+		buffer.WriteString(`  echo "proxy=${http_proxy}" >> /etc/yum.conf ;;` + "\n")
 		buffer.WriteString("esac\n")
 
 		// Set env variables for systemd
@@ -414,5 +467,17 @@ func (b *BootstrapScript) createProxyEnv(ps *kops.EgressProxySpec) string {
 		buffer.WriteString("systemctl daemon-reload\n")
 		buffer.WriteString("systemctl daemon-reexec\n")
 	}
-	return buffer.String()
+	return buffer.String(), nil
+}
+
+func setSysctls() string {
+	var b bytes.Buffer
+
+	// Based on https://github.com/kubernetes/kops/issues/10206#issuecomment-766852332
+	b.WriteString("sysctl -w net.core.rmem_max=16777216 || true\n")
+	b.WriteString("sysctl -w net.core.wmem_max=16777216 || true\n")
+	b.WriteString("sysctl -w net.ipv4.tcp_rmem='4096 87380 16777216' || true\n")
+	b.WriteString("sysctl -w net.ipv4.tcp_wmem='4096 87380 16777216' || true\n")
+
+	return b.String()
 }

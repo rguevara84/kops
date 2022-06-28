@@ -17,8 +17,12 @@ limitations under the License.
 package awstasks
 
 import (
+	"strings"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/eventbridge"
+	"github.com/aws/aws-sdk-go/service/iam"
 )
 
 func mapEC2TagsToMap(tags []*ec2.Tag) map[string]string {
@@ -27,6 +31,51 @@ func mapEC2TagsToMap(tags []*ec2.Tag) map[string]string {
 	}
 	m := make(map[string]string)
 	for _, t := range tags {
+		if strings.HasPrefix(aws.StringValue(t.Key), "aws:cloudformation:") {
+			continue
+		}
+		m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	return m
+}
+
+func mapIAMTagsToMap(tags []*iam.Tag) map[string]string {
+	if tags == nil {
+		return nil
+	}
+	m := make(map[string]string)
+	for _, t := range tags {
+		if strings.HasPrefix(aws.StringValue(t.Key), "aws:cloudformation:") {
+			continue
+		}
+		m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
+	}
+	return m
+}
+
+func mapToIAMTags(tags map[string]string) []*iam.Tag {
+	if tags == nil {
+		return nil
+	}
+	m := make([]*iam.Tag, 0)
+	for k, v := range tags {
+		m = append(m, &iam.Tag{
+			Key:   aws.String(k),
+			Value: aws.String(v),
+		})
+	}
+	return m
+}
+
+func mapEventBridgeTagsToMap(tags []*eventbridge.Tag) map[string]string {
+	if tags == nil {
+		return nil
+	}
+	m := make(map[string]string)
+	for _, t := range tags {
+		if strings.HasPrefix(aws.StringValue(t.Key), "aws:cloudformation:") {
+			continue
+		}
 		m[aws.StringValue(t.Key)] = aws.StringValue(t.Value)
 	}
 	return m

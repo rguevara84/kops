@@ -17,15 +17,15 @@ limitations under the License.
 package gce
 
 import (
+	"context"
 	"encoding/base32"
 	"fmt"
 	"hash/fnv"
 	"strings"
 
-	context "golang.org/x/net/context"
-	compute "google.golang.org/api/compute/v0.beta"
+	compute "google.golang.org/api/compute/v1"
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/cloudinstances"
 )
@@ -46,23 +46,24 @@ func deleteCloudInstanceGroup(c GCECloud, g *cloudinstances.CloudInstanceGroup) 
 	return DeleteInstanceTemplate(c, mig.InstanceTemplate)
 }
 
-// DeleteGroup implements fi.Cloud::DeleteGroup
-func (c *mockGCECloud) DeleteGroup(g *cloudinstances.CloudInstanceGroup) error {
-	return deleteCloudInstanceGroup(c, g)
-}
-
 // DeleteInstance deletes a GCE instance
-func (c *gceCloudImplementation) DeleteInstance(i *cloudinstances.CloudInstanceGroupMember) error {
-	return recreateCloudInstanceGroupMember(c, i)
+func (c *gceCloudImplementation) DeleteInstance(i *cloudinstances.CloudInstance) error {
+	return recreateCloudInstance(c, i)
 }
 
-// DeleteInstance deletes a GCE instance
-func (c *mockGCECloud) DeleteInstance(i *cloudinstances.CloudInstanceGroupMember) error {
-	return recreateCloudInstanceGroupMember(c, i)
+func (c *gceCloudImplementation) DeregisterInstance(i *cloudinstances.CloudInstance) error {
+	klog.V(8).Info("GCE DeregisterInstance not implemented")
+	return nil
 }
 
-// recreateCloudInstanceGroupMember recreates the specified instances, managed by an InstanceGroupManager
-func recreateCloudInstanceGroupMember(c GCECloud, i *cloudinstances.CloudInstanceGroupMember) error {
+// DetachInstance is not implemented yet. It needs to cause a cloud instance to no longer be counted against the group's size limits.
+func (c *gceCloudImplementation) DetachInstance(i *cloudinstances.CloudInstance) error {
+	klog.V(8).Info("gce cloud provider DetachInstance not implemented yet")
+	return fmt.Errorf("gce cloud provider does not support surging")
+}
+
+// recreateCloudInstance recreates the specified instances, managed by an InstanceGroupManager
+func recreateCloudInstance(c GCECloud, i *cloudinstances.CloudInstance) error {
 	mig := i.CloudInstanceGroup.Raw.(*compute.InstanceGroupManager)
 
 	klog.V(2).Infof("Recreating GCE Instance %s in MIG %s", i.ID, mig.Name)
@@ -72,12 +73,7 @@ func recreateCloudInstanceGroupMember(c GCECloud, i *cloudinstances.CloudInstanc
 		return err
 	}
 
-	req := &compute.InstanceGroupManagersRecreateInstancesRequest{
-		Instances: []string{
-			i.ID,
-		},
-	}
-	op, err := c.Compute().InstanceGroupManagers.RecreateInstances(migURL.Project, migURL.Zone, migURL.Name, req).Do()
+	op, err := c.Compute().InstanceGroupManagers().RecreateInstances(migURL.Project, migURL.Zone, migURL.Name, i.ID)
 	if err != nil {
 		if IsNotFound(err) {
 			klog.Infof("Instance not found, assuming deleted: %q", i.ID)
@@ -132,74 +128,72 @@ func getCloudGroups(c GCECloud, cluster *kops.Cluster, instancegroups []*kops.In
 	}
 
 	for _, zoneName := range zones {
-		err := c.Compute().InstanceGroupManagers.List(project, zoneName).Pages(ctx, func(page *compute.InstanceGroupManagerList) error {
-			for _, mig := range page.Items {
-				name := mig.Name
-
-				instanceTemplate := instanceTemplates[mig.InstanceTemplate]
-				if instanceTemplate == nil {
-					klog.V(2).Infof("ignoring MIG %s with unmanaged InstanceTemplate: %s", name, mig.InstanceTemplate)
-					continue
-				}
-
-				ig, err := matchInstanceGroup(mig, cluster, instancegroups)
-				if err != nil {
-					return fmt.Errorf("error getting instance group for MIG %q", name)
-				}
-				if ig == nil {
-					if warnUnmatched {
-						klog.Warningf("Found MIG with no corresponding instance group %q", name)
-					}
-					continue
-				}
-
-				g := &cloudinstances.CloudInstanceGroup{
-					HumanName:     mig.Name,
-					InstanceGroup: ig,
-					MinSize:       int(mig.TargetSize),
-					MaxSize:       int(mig.TargetSize),
-					Raw:           mig,
-				}
-				groups[mig.Name] = g
-
-				latestInstanceTemplate := mig.InstanceTemplate
-
-				instances, err := ListManagedInstances(c, mig)
-				if err != nil {
-					return err
-				}
-
-				for _, i := range instances {
-					id := i.Instance
-					cm := &cloudinstances.CloudInstanceGroupMember{
-						ID:                 id,
-						CloudInstanceGroup: g,
-					}
-
-					// Try first by provider ID
-					name := LastComponent(id)
-					providerID := "gce://" + project + "/" + zoneName + "/" + name
-					node := nodesByProviderID[providerID]
-
-					if node != nil {
-						cm.Node = node
-					} else {
-						klog.V(8).Infof("unable to find node for instance: %s", id)
-					}
-
-					if i.Version != nil && latestInstanceTemplate == i.Version.InstanceTemplate {
-						g.Ready = append(g.Ready, cm)
-					} else {
-						g.NeedUpdate = append(g.NeedUpdate, cm)
-					}
-				}
-
-			}
-			return nil
-		})
-
+		migs, err := c.Compute().InstanceGroupManagers().List(ctx, project, zoneName)
 		if err != nil {
 			return nil, fmt.Errorf("error listing InstanceGroupManagers: %v", err)
+		}
+		for _, mig := range migs {
+			name := mig.Name
+
+			instanceTemplate := instanceTemplates[mig.InstanceTemplate]
+			if instanceTemplate == nil {
+				klog.V(2).Infof("ignoring MIG %s with unmanaged InstanceTemplate: %s", name, mig.InstanceTemplate)
+				continue
+			}
+
+			ig, err := matchInstanceGroup(mig, cluster, instancegroups)
+			if err != nil {
+				return nil, fmt.Errorf("error getting instance group for MIG %q", name)
+			}
+			if ig == nil {
+				if warnUnmatched {
+					klog.Warningf("Found MIG with no corresponding instance group %q", name)
+				}
+				continue
+			}
+
+			g := &cloudinstances.CloudInstanceGroup{
+				HumanName:     mig.Name,
+				InstanceGroup: ig,
+				MinSize:       int(mig.TargetSize),
+				TargetSize:    int(mig.TargetSize),
+				MaxSize:       int(mig.TargetSize),
+				Raw:           mig,
+			}
+			groups[mig.Name] = g
+
+			latestInstanceTemplate := mig.InstanceTemplate
+
+			instances, err := ListManagedInstances(c, mig)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, i := range instances {
+				id := i.Instance
+				cm := &cloudinstances.CloudInstance{
+					ID:                 id,
+					CloudInstanceGroup: g,
+				}
+
+				// Try first by provider ID
+				name := LastComponent(id)
+				providerID := "gce://" + project + "/" + zoneName + "/" + name
+				node := nodesByProviderID[providerID]
+
+				if node != nil {
+					cm.Node = node
+				} else {
+					klog.V(8).Infof("unable to find node for instance: %s", id)
+				}
+
+				if i.Version != nil && latestInstanceTemplate == i.Version.InstanceTemplate {
+					g.Ready = append(g.Ready, cm)
+				} else {
+					g.NeedUpdate = append(g.NeedUpdate, cm)
+				}
+			}
+
 		}
 	}
 

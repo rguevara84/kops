@@ -21,7 +21,7 @@ import (
 	"net"
 	"sort"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/util/subnet"
 	"k8s.io/kops/upup/pkg/fi"
@@ -34,14 +34,16 @@ type ByZone []*kops.ClusterSubnetSpec
 func (a ByZone) Len() int {
 	return len(a)
 }
+
 func (a ByZone) Swap(i, j int) {
 	a[i], a[j] = a[j], a[i]
 }
+
 func (a ByZone) Less(i, j int) bool {
 	return a[i].Zone < a[j].Zone
 }
 
-func assignCIDRsToSubnets(c *kops.Cluster) error {
+func assignCIDRsToSubnets(c *kops.Cluster, cloud fi.Cloud) error {
 	// TODO: We probably could query for the existing subnets & allocate appropriately
 	// for now we'll require users to set CIDRs themselves
 
@@ -51,10 +53,6 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 	}
 
 	if c.Spec.NetworkID != "" {
-		cloud, err := BuildCloud(c)
-		if err != nil {
-			return err
-		}
 
 		vpcInfo, err := cloud.FindVPCInfo(c.Spec.NetworkID)
 		if err != nil {
@@ -121,7 +119,7 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 	for i := range c.Spec.Subnets {
 		subnet := &c.Spec.Subnets[i]
 		switch subnet.Type {
-		case kops.SubnetTypePublic, kops.SubnetTypePrivate:
+		case kops.SubnetTypeDualStack, kops.SubnetTypePublic, kops.SubnetTypePrivate:
 			bigSubnets = append(bigSubnets, subnet)
 
 		case kops.SubnetTypeUtility:
@@ -174,6 +172,9 @@ func assignCIDRsToSubnets(c *kops.Cluster) error {
 
 	for _, subnet := range bigSubnets {
 		if subnet.CIDR != "" {
+			continue
+		}
+		if subnet.IPv6CIDR != "" && subnet.Type == kops.SubnetTypePrivate {
 			continue
 		}
 

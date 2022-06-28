@@ -26,10 +26,14 @@ import (
 )
 
 func (c *openstackCloud) ListSecurityGroups(opt sg.ListOpts) ([]sg.SecGroup, error) {
+	return listSecurityGroups(c, opt)
+}
+
+func listSecurityGroups(c OpenstackCloud, opt sg.ListOpts) ([]sg.SecGroup, error) {
 	var groups []sg.SecGroup
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := sg.List(c.neutronClient, opt).AllPages()
+		allPages, err := sg.List(c.NetworkingClient(), opt).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("error listing security groups %v: %v", opt, err)
 		}
@@ -51,10 +55,14 @@ func (c *openstackCloud) ListSecurityGroups(opt sg.ListOpts) ([]sg.SecGroup, err
 }
 
 func (c *openstackCloud) CreateSecurityGroup(opt sg.CreateOptsBuilder) (*sg.SecGroup, error) {
+	return createSecurityGroup(c, opt)
+}
+
+func createSecurityGroup(c OpenstackCloud, opt sg.CreateOptsBuilder) (*sg.SecGroup, error) {
 	var group *sg.SecGroup
 
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		g, err := sg.Create(c.neutronClient, opt).Extract()
+		g, err := sg.Create(c.NetworkingClient(), opt).Extract()
 		if err != nil {
 			return false, fmt.Errorf("error creating security group %v: %v", opt, err)
 		}
@@ -71,10 +79,14 @@ func (c *openstackCloud) CreateSecurityGroup(opt sg.CreateOptsBuilder) (*sg.SecG
 }
 
 func (c *openstackCloud) ListSecurityGroupRules(opt sgr.ListOpts) ([]sgr.SecGroupRule, error) {
+	return listSecurityGroupRules(c, opt)
+}
+
+func listSecurityGroupRules(c OpenstackCloud, opt sgr.ListOpts) ([]sgr.SecGroupRule, error) {
 	var rules []sgr.SecGroupRule
 
 	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
-		allPages, err := sgr.List(c.neutronClient, opt).AllPages()
+		allPages, err := sgr.List(c.NetworkingClient(), opt).AllPages()
 		if err != nil {
 			return false, fmt.Errorf("error listing security group rules %v: %v", opt, err)
 		}
@@ -96,10 +108,14 @@ func (c *openstackCloud) ListSecurityGroupRules(opt sgr.ListOpts) ([]sgr.SecGrou
 }
 
 func (c *openstackCloud) CreateSecurityGroupRule(opt sgr.CreateOptsBuilder) (*sgr.SecGroupRule, error) {
+	return createSecurityGroupRule(c, opt)
+}
+
+func createSecurityGroupRule(c OpenstackCloud, opt sgr.CreateOptsBuilder) (*sgr.SecGroupRule, error) {
 	var rule *sgr.SecGroupRule
 
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		r, err := sgr.Create(c.neutronClient, opt).Extract()
+		r, err := sgr.Create(c.NetworkingClient(), opt).Extract()
 		if err != nil {
 			return false, fmt.Errorf("error creating security group rule %v: %v", opt, err)
 		}
@@ -116,12 +132,19 @@ func (c *openstackCloud) CreateSecurityGroupRule(opt sgr.CreateOptsBuilder) (*sg
 }
 
 func (c *openstackCloud) DeleteSecurityGroup(sgID string) error {
-	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		err := sg.Delete(c.neutronClient, sgID).ExtractErr()
+	return deleteSecurityGroup(c, sgID)
+}
+
+func deleteSecurityGroup(c OpenstackCloud, sgID string) error {
+	done, err := vfs.RetryWithBackoff(deleteBackoff, func() (bool, error) {
+		err := sg.Delete(c.NetworkingClient(), sgID).ExtractErr()
 		if err != nil && !isNotFound(err) {
 			return false, fmt.Errorf("error deleting security group: %v", err)
 		}
-		return true, nil
+		if isNotFound(err) {
+			return true, nil
+		}
+		return false, nil
 	})
 	if err != nil {
 		return err
@@ -133,8 +156,12 @@ func (c *openstackCloud) DeleteSecurityGroup(sgID string) error {
 }
 
 func (c *openstackCloud) DeleteSecurityGroupRule(ruleID string) error {
+	return deleteSecurityGroupRule(c, ruleID)
+}
+
+func deleteSecurityGroupRule(c OpenstackCloud, ruleID string) error {
 	done, err := vfs.RetryWithBackoff(writeBackoff, func() (bool, error) {
-		err := sgr.Delete(c.neutronClient, ruleID).ExtractErr()
+		err := sgr.Delete(c.NetworkingClient(), ruleID).ExtractErr()
 		if err != nil && !isNotFound(err) {
 			return false, fmt.Errorf("error deleting security group rule: %v", err)
 		}

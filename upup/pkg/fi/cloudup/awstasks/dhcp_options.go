@@ -18,22 +18,22 @@ package awstasks
 
 import (
 	"fmt"
-
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=DHCPOptions
+// +kops:fitask
 type DHCPOptions struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID                *string
 	DomainName        *string
@@ -141,7 +141,9 @@ func (_ *DHCPOptions) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *DHCPOption
 	if a == nil {
 		klog.V(2).Infof("Creating DHCPOptions with Name:%q", *e.Name)
 
-		request := &ec2.CreateDhcpOptionsInput{}
+		request := &ec2.CreateDhcpOptionsInput{
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeDhcpOptions, e.Tags),
+		}
 		if e.DomainNameServers != nil {
 			o := &ec2.NewDhcpConfiguration{
 				Key:    aws.String("domain-name-servers"),
@@ -169,9 +171,9 @@ func (_ *DHCPOptions) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *DHCPOption
 }
 
 type terraformDHCPOptions struct {
-	DomainName        *string           `json:"domain_name,omitempty"`
-	DomainNameServers []string          `json:"domain_name_servers,omitempty"`
-	Tags              map[string]string `json:"tags,omitempty"`
+	DomainName        *string           `cty:"domain_name"`
+	DomainNameServers []string          `cty:"domain_name_servers"`
+	Tags              map[string]string `cty:"tags"`
 }
 
 func (_ *DHCPOptions) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *DHCPOptions) error {
@@ -187,8 +189,8 @@ func (_ *DHCPOptions) RenderTerraform(t *terraform.TerraformTarget, a, e, change
 	return t.RenderResource("aws_vpc_dhcp_options", *e.Name, tf)
 }
 
-func (e *DHCPOptions) TerraformLink() *terraform.Literal {
-	return terraform.LiteralProperty("aws_vpc_dhcp_options", *e.Name, "id")
+func (e *DHCPOptions) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralProperty("aws_vpc_dhcp_options", *e.Name, "id")
 }
 
 type cloudformationDHCPOptions struct {

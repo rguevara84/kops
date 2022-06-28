@@ -53,7 +53,7 @@ spec:
     spec:
       containers:
       - name: autoscaler
-        image: k8s.gcr.io/cluster-proportional-autoscaler-{{Arch}}:1.4.0
+        image: {{ if KubeDNS.CPAImage }}{{ KubeDNS.CPAImage }}{{ else }}registry.k8s.io/cpa/cluster-proportional-autoscaler:1.8.3{{ end }}
         resources:
             requests:
                 cpu: "20m"
@@ -69,6 +69,7 @@ spec:
           - --default-params={"linear":{"coresPerReplica":256,"nodesPerReplica":16,"preventSinglePointFailure":true}}
           - --logtostderr=true
           - --v=2
+      priorityClassName: system-cluster-critical
       tolerations:
       - key: "CriticalAddonsOnly"
         operator: "Exists"
@@ -119,6 +120,7 @@ spec:
                         - kube-dns
                 topologyKey: kubernetes.io/hostname
       dnsPolicy: Default  # Don't use cluster DNS.
+      priorityClassName: system-cluster-critical
       serviceAccountName: kube-dns
       volumes:
       - name: kube-dns-config
@@ -128,7 +130,7 @@ spec:
 
       containers:
       - name: kubedns
-        image: k8s.gcr.io/k8s-dns-kube-dns-{{Arch}}:1.14.13
+        image: registry.k8s.io/k8s-dns-kube-dns:1.15.13
         resources:
           # TODO: Set memory limits when we've profiled the container for large
           # clusters, then set request = limit to keep this container in
@@ -180,7 +182,7 @@ spec:
           mountPath: /kube-dns-config
 
       - name: dnsmasq
-        image: k8s.gcr.io/k8s-dns-dnsmasq-nanny-{{Arch}}:1.14.13
+        image: registry.k8s.io/k8s-dns-dnsmasq-nanny:1.15.13
         livenessProbe:
           httpGet:
             path: /healthcheck/dnsmasq
@@ -222,7 +224,7 @@ spec:
           mountPath: /etc/k8s/dns/dnsmasq-nanny
 
       - name: sidecar
-        image: k8s.gcr.io/k8s-dns-sidecar-amd64:1.14.13
+        image: registry.k8s.io/k8s-dns-sidecar:1.15.13
         livenessProbe:
           httpGet:
             path: /metrics
@@ -249,6 +251,18 @@ spec:
 ---
 
 apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-dns
+  namespace: kube-system
+  labels:
+    k8s-addon: kube-dns.addons.k8s.io
+    k8s-app: kube-dns
+    kubernetes.io/cluster-service: "true"
+
+---
+
+apiVersion: v1
 kind: Service
 metadata:
   name: kube-dns
@@ -258,6 +272,9 @@ metadata:
     k8s-app: kube-dns
     kubernetes.io/cluster-service: "true"
     kubernetes.io/name: "KubeDNS"
+  # Without this resourceVersion value, an update of the Service between versions will yield:
+  #   Service "kube-dns" is invalid: metadata.resourceVersion: Invalid value: "": must be specified for an update
+  resourceVersion: "0"
 spec:
   selector:
     k8s-app: kube-dns
@@ -327,8 +344,9 @@ apiVersion: policy/v1beta1
 kind: PodDisruptionBudget
 metadata:
   name: kube-dns
+  namespace: kube-system
 spec:
   selector:
     matchLabels:
       k8s-app: kube-dns
-  minAvailable: 1
+  maxUnavailable: 50%

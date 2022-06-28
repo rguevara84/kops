@@ -21,14 +21,19 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	"k8s.io/kops/pkg/apis/kops"
 )
 
 const (
 	// The tag name we use to differentiate multiple logically independent clusters running in the same region
 	GceLabelNameKubernetesCluster = "k8s-io-cluster-name"
-
+	GceLabelNameInstanceGroup     = "k8s-io-instance-group"
 	GceLabelNameRolePrefix        = "k8s-io-role-"
 	GceLabelNameEtcdClusterPrefix = "k8s-io-etcd-"
+	ControlPlane                  = "control-plane"
+	Bastion                       = "bastion"
+	Node                          = "node"
 )
 
 // EncodeGCELabel encodes a string into an RFC1035 compatible value, suitable for use as GCE label key or value
@@ -55,7 +60,12 @@ func DecodeGCELabel(s string) (string, error) {
 	uriForm := strings.Replace(s, "-", "%", -1)
 	v, err := url.QueryUnescape(uriForm)
 	if err != nil {
-		return "", fmt.Errorf("Cannot decode GCE label: %q", s)
+		return "", fmt.Errorf("cannot decode GCE label: %q", s)
 	}
 	return v, nil
+}
+
+// TagForRole return the instance (network) tag used for instances with the given role.
+func TagForRole(clusterName string, role kops.InstanceGroupRole) string {
+	return ClusterPrefixedName(GceLabelNameRolePrefix+strings.ToLower(string(role)), clusterName, 63)
 }

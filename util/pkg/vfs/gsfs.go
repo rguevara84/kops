@@ -18,9 +18,11 @@ package vfs
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"path"
@@ -28,11 +30,11 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/context"
 	"google.golang.org/api/googleapi"
 	storage "google.golang.org/api/storage/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 	"k8s.io/kops/util/pkg/hashing"
 )
 
@@ -44,8 +46,11 @@ type GSPath struct {
 	md5Hash string
 }
 
-var _ Path = &GSPath{}
-var _ HasHash = &GSPath{}
+var (
+	_ Path          = &GSPath{}
+	_ TerraformPath = &GSPath{}
+	_ HasHash       = &GSPath{}
+)
 
 // gcsReadBackoff is the backoff strategy for GCS read retries
 var gcsReadBackoff = wait.Backoff{
@@ -58,6 +63,15 @@ var gcsReadBackoff = wait.Backoff{
 // GSAcl is an ACL implementation for objects on Google Cloud Storage
 type GSAcl struct {
 	Acl []*storage.ObjectAccessControl
+}
+
+func (a *GSAcl) String() string {
+	var s []string
+	for _, acl := range a.Acl {
+		s = append(s, fmt.Sprintf("%+v", acl))
+	}
+
+	return "{" + strings.Join(s, ", ") + "}"
 }
 
 var _ ACL = &GSAcl{}
@@ -102,6 +116,15 @@ func (p *GSPath) String() string {
 	return p.Path()
 }
 
+// TerraformProvider returns the provider name and necessary arguments
+func (p *GSPath) TerraformProvider() (*TerraformProvider, error) {
+	provider := &TerraformProvider{
+		Name:      "google",
+		Arguments: map[string]string{}, // GCS doesn't need the project and region specified
+	}
+	return provider, nil
+}
+
 func (p *GSPath) Remove() error {
 	done, err := RetryWithBackoff(gcsWriteBackoff, func() (bool, error) {
 		err := p.client.Objects.Delete(p.bucket, p.key).Do()
@@ -123,6 +146,10 @@ func (p *GSPath) Remove() error {
 	}
 }
 
+func (p *GSPath) RemoveAllVersions() error {
+	return p.Remove()
+}
+
 func (p *GSPath) Join(relativePath ...string) Path {
 	args := []string{p.key}
 	args = append(args, relativePath...)
@@ -135,25 +162,26 @@ func (p *GSPath) Join(relativePath ...string) Path {
 }
 
 func (p *GSPath) WriteFile(data io.ReadSeeker, acl ACL) error {
+	md5Hash, err := hashing.HashAlgorithmMD5.Hash(data)
+	if err != nil {
+		return err
+	}
+
 	done, err := RetryWithBackoff(gcsWriteBackoff, func() (bool, error) {
-		klog.V(4).Infof("Writing file %q", p)
-
-		md5Hash, err := hashing.HashAlgorithmMD5.Hash(data)
-		if err != nil {
-			return false, err
-		}
-
 		obj := &storage.Object{
 			Name:    p.key,
 			Md5Hash: base64.StdEncoding.EncodeToString(md5Hash.HashValue),
 		}
 
 		if acl != nil {
-			gsAcl, ok := acl.(*GSAcl)
+			gsACL, ok := acl.(*GSAcl)
 			if !ok {
 				return true, fmt.Errorf("write to %s with ACL of unexpected type %T", p, acl)
 			}
-			obj.Acl = gsAcl.Acl
+			obj.Acl = gsACL.Acl
+			klog.V(4).Infof("Writing file %q with ACL %v", p, gsACL)
+		} else {
+			klog.V(4).Infof("Writing file %q", p)
 		}
 
 		if _, err := data.Seek(0, 0); err != nil {
@@ -356,6 +384,63 @@ func (p *GSPath) Hash(a hashing.HashAlgorithm) (*hashing.Hash, error) {
 	}
 
 	return &hashing.Hash{Algorithm: hashing.HashAlgorithmMD5, HashValue: md5Bytes}, nil
+}
+
+type terraformGSObject struct {
+	Bucket   string                   `json:"bucket" cty:"bucket"`
+	Name     string                   `json:"name" cty:"name"`
+	Source   string                   `json:"source" cty:"source"`
+	Provider *terraformWriter.Literal `json:"provider,omitempty" cty:"provider"`
+}
+
+type terraformGSObjectAccessControl struct {
+	Bucket     string                   `json:"bucket" cty:"bucket"`
+	Object     *terraformWriter.Literal `json:"object" cty:"object"`
+	RoleEntity []string                 `json:"role_entity" cty:"role_entity"`
+	Provider   *terraformWriter.Literal `json:"provider,omitempty" cty:"provider"`
+}
+
+func (p *GSPath) RenderTerraform(w *terraformWriter.TerraformWriter, name string, data io.Reader, acl ACL) error {
+	bytes, err := ioutil.ReadAll(data)
+	if err != nil {
+		return fmt.Errorf("reading data: %v", err)
+	}
+
+	content, err := w.AddFileBytes("google_storage_bucket_object", name, "content", bytes, false)
+	if err != nil {
+		return fmt.Errorf("rendering GCS file: %v", err)
+	}
+
+	tf := &terraformGSObject{
+		Bucket:   p.Bucket(),
+		Name:     p.Object(),
+		Source:   content.FnArgs[0],
+		Provider: terraformWriter.LiteralTokens("google", "files"),
+	}
+	err = w.RenderResource("google_storage_bucket_object", name, tf)
+	if err != nil {
+		return err
+	}
+
+	// file ACLs can be empty on GCP, because of a bucket-only ACL.
+	if acl != nil {
+		tfACL := &terraformGSObjectAccessControl{
+			Bucket:     p.Bucket(),
+			Object:     p.TerraformLink(name),
+			RoleEntity: make([]string, 0),
+			Provider:   terraformWriter.LiteralTokens("google", "files"),
+		}
+		for _, re := range acl.(*GSAcl).Acl {
+			// https://registry.terraform.io/providers/hashicorp/google/latest/docs/resources/storage_object_acl#role_entity
+			tfACL.RoleEntity = append(tfACL.RoleEntity, fmt.Sprintf("%v:%v", re.Role, re.Entity))
+		}
+		return w.RenderResource("google_storage_object_access_control", name, tfACL)
+	}
+	return nil
+}
+
+func (s *GSPath) TerraformLink(name string) *terraformWriter.Literal {
+	return terraformWriter.LiteralProperty("google_storage_bucket_object", name, "output_name")
 }
 
 func isGCSNotFound(err error) bool {

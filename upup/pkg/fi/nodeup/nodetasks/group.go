@@ -22,7 +22,7 @@ import (
 	"strconv"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/cloudinit"
 	"k8s.io/kops/upup/pkg/fi/nodeup/local"
@@ -45,10 +45,6 @@ var _ fi.HasName = &File{}
 
 func (f *GroupTask) GetName() *string {
 	return &f.Name
-}
-
-func (f *GroupTask) SetName(name string) {
-	klog.Fatalf("SetName not supported for Group task")
 }
 
 func (e *GroupTask) Find(c *fi.Context) (*GroupTask, error) {

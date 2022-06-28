@@ -21,21 +21,23 @@ import (
 
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 
+	"github.com/gophercloud/gophercloud"
 	v2pools "github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/pools"
-	"k8s.io/klog"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
+	"k8s.io/kops/util/pkg/vfs"
 )
 
-//go:generate fitask -type=PoolAssociation
+// +kops:fitask
 type PoolAssociation struct {
 	ID            *string
 	Name          *string
-	Lifecycle     *fi.Lifecycle
+	Lifecycle     fi.Lifecycle
 	Pool          *LBPool
 	ServerGroup   *ServerGroup
 	InterfaceName *string
 	ProtocolPort  *int
+	Weight        *int
 }
 
 // GetDependencies returns the dependencies of the Instance task
@@ -81,20 +83,20 @@ func (p *PoolAssociation) Find(context *fi.Context) (*PoolAssociation, error) {
 
 	a := rs[0]
 	// check is member already created
-	found := false
+	var found *v2pools.Member
 	for _, member := range a.Members {
-		poolMember, err := cloud.GetPool(a.ID, member.ID)
+		poolMember, err := cloud.GetPoolMember(a.ID, member.ID)
 		if err != nil {
 			return nil, err
 		}
 		if fi.StringValue(p.Name) == poolMember.Name {
-			found = true
+			found = poolMember
 			break
 		}
 	}
 	// if not found it is created by returning nil, nil
 	// this is needed for instance in initial installation
-	if !found {
+	if found == nil {
 		return nil, nil
 	}
 	pool, err := NewLBPoolTaskFromCloud(cloud, p.Lifecycle, &a, nil)
@@ -103,13 +105,14 @@ func (p *PoolAssociation) Find(context *fi.Context) (*PoolAssociation, error) {
 	}
 
 	actual := &PoolAssociation{
-		ID:            p.ID,
-		Name:          p.Name,
+		ID:            fi.String(found.ID),
+		Name:          fi.String(found.Name),
 		Pool:          pool,
 		ServerGroup:   p.ServerGroup,
 		InterfaceName: p.InterfaceName,
 		ProtocolPort:  p.ProtocolPort,
 		Lifecycle:     p.Lifecycle,
+		Weight:        fi.Int(found.Weight),
 	}
 	p.ID = actual.ID
 	return actual, nil
@@ -135,19 +138,33 @@ func (_ *PoolAssociation) CheckChanges(a, e, changes *PoolAssociation) error {
 	return nil
 }
 
+func GetServerFixedIP(client *gophercloud.ServiceClient, serverID string, interfaceName string) (server *servers.Server, memberAddress string, err error) {
+	done, err := vfs.RetryWithBackoff(readBackoff, func() (bool, error) {
+		server, err = servers.Get(client, serverID).Extract()
+		if err != nil {
+			return true, fmt.Errorf("Failed to find server with id `%s`: %v", serverID, err)
+		}
+
+		memberAddress, err = openstack.GetServerFixedIP(server, interfaceName)
+		if err != nil {
+			// sometimes provisioning interfaces is slow, that is why we need retry the interface from the server
+			return false, fmt.Errorf("Failed to get fixed ip for associated pool: %v", err)
+		}
+		return true, nil
+	})
+	if done {
+		return server, memberAddress, nil
+	}
+	return server, memberAddress, err
+}
+
 func (_ *PoolAssociation) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes *PoolAssociation) error {
 	if a == nil {
 
-		for _, serverID := range e.ServerGroup.Members {
-			server, err := servers.Get(t.Cloud.ComputeClient(), serverID).Extract()
+		for _, serverID := range e.ServerGroup.GetMembers() {
+			server, memberAddress, err := GetServerFixedIP(t.Cloud.ComputeClient(), serverID, fi.StringValue(e.InterfaceName))
 			if err != nil {
-				return fmt.Errorf("Failed to find server with id `%s`: %v", serverID, err)
-			}
-
-			memberAddress, err := openstack.GetServerFixedIP(server, fi.StringValue(e.InterfaceName))
-
-			if err != nil {
-				return fmt.Errorf("Failed to get fixed ip for associated pool: %v", err)
+				return err
 			}
 
 			member, err := t.Cloud.AssociateToPool(server, fi.StringValue(e.Pool.ID), v2pools.CreateMemberOpts{
@@ -161,12 +178,13 @@ func (_ *PoolAssociation) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e,
 			}
 			e.ID = fi.String(member.ID)
 		}
-		return nil
 	} else {
-		//TODO: Update Member, this is covered as `a` will always be nil
-		klog.V(2).Infof("Openstack task PoolAssociation::RenderOpenstack Update not implemented!")
+		_, err := t.Cloud.UpdateMemberInPool(fi.StringValue(a.Pool.ID), fi.StringValue(a.ID), v2pools.UpdateMemberOpts{
+			Weight: e.Weight,
+		})
+		if err != nil {
+			return fmt.Errorf("Failed to update member: %v", err)
+		}
 	}
-
-	klog.V(2).Infof("Openstack task PoolAssociation::RenderOpenstack did nothing")
 	return nil
 }

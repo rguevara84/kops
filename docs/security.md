@@ -2,65 +2,42 @@
 
 ## SSH Access
 
-SSH is allowed to the masters and the nodes, by default from anywhere.
+SSH is allowed to the masters and the nodes, by default from anywhere. However, no public key will be
+installed. You can use instead use [ec2 instance connect](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Connect-using-EC2-Instance-Connect.html),
+which is installed in the default AMIs.
 
-To change the CIDR allowed to access SSH (and HTTPS), set AdminAccess on the cluster spec.
+If you want to use a fixed key for the cluster, you have to specify `--ssh-public-key <public key file>` on the `kops create cluster` command
+or use `kops create sshpublickey`. You can also set the following in the cluster spec:
 
-When using the default images, the SSH username will be `admin`, and the SSH private key will be
-the private key corresponding to the public key in `kops get secrets --type sshpublickey admin`.  When
-creating a new cluster, the SSH public key can be specified with the `--ssh-public-key` option, and it
-defaults to `~/.ssh/id_rsa.pub`.
+```yaml
+spec:
+  sshKeyName: <ssh key pair>
+```
 
-> Note: In CoreOS, SSH username will be `core`.
+An EC2 key pair with the name`<ssh key pair>` has to already exist.
+
+By default, SSH is allowed from any address. You can restrict from where SSH connections can be made by
+setting either `spec.sshAccess` in the cluster spec or using `kops create cluster --ssh-access`.
 
 To change the SSH public key on an existing cluster:
 
-* `kops delete secret --name <clustername> sshpublickey admin`
-* `kops create secret --name <clustername> sshpublickey admin -i ~/.ssh/newkey.pub`
-* `kops update cluster --yes` to reconfigure the auto-scaling groups
-* `kops rolling-update cluster --name <clustername> --yes` to immediately roll all the machines so they have the new key (optional)
+* `kops delete sshpublickey --name <clustername> sshpublickey`
+* `kops create sshpublickey --name <clustername> sshpublickey -i ~/.ssh/newkey.pub`
+* `kops update <clustername> --yes` to reconfigure the launch templates.
+* `kops rolling-update cluster --name <clustername> --yes` to roll all the machines so they have the new key.
 
 ## Docker Configuration
 
-If you are using a private registry such as quay.io, you may be familiar with the inconvenience of managing the `imagePullSecrets` for each namespace. It can also be a pain to use [Kops Hooks](cluster_spec.md#hooks) with private images. To configure docker on all nodes with access to one or more private registries:
+If you are using a private registry such as quay.io, you may be familiar with the inconvenience of managing the `imagePullSecrets` for each namespace. It can also be a pain to use [kOps Hooks](cluster_spec.md#hooks) with private images. To configure docker on all nodes with access to one or more private registries:
 
 * `kops create secret --name <clustername> dockerconfig -f ~/.docker/config.json`
 * `kops rolling-update cluster --name <clustername> --yes` to immediately roll all the machines so they have the new key (optional)
 
 This stores the [config.json](https://docs.docker.com/engine/reference/commandline/login/) in `/root/.docker/config.json` on all nodes (include masters) so that both Kubernetes and system containers may use registries defined in it.
 
-## IAM roles
+Note that this will also work when using containerd.
+
+## Instance IAM roles
 
 All Pods running on your cluster have access to underlying instance IAM role.
-Currently permission scope is quite broad. See [iam_roles.md](iam_roles.md) for details and ways to mitigate that.
-
-## Kubernetes API
-
-(this section is a work in progress)
-
-Kubernetes has a number of authentication mechanisms:
-
-## Kubelet API
-
-By default AnonymousAuth on the kubelet is 'on' and so communication between kube-apiserver and kubelet api is not authenticated. In order to switch on authentication;
-
-```YAML
-# In the cluster spec
-spec:
-  kubelet:
-    anonymousAuth: false
-```
-
-**Note** on an existing cluster with 'anonymousAuth' unset you would need to first roll out the masters and then update the node instance groups.
-
-### API Bearer Token
-
-The API bearer token is a secret named 'admin'.
-
-`kops get secrets --type secret admin -oplaintext` will show it
-
-### Admin Access
-
-Access to the administrative API is stored in a secret named 'kube':
-
-`kops get secrets kube -oplaintext` or `kubectl config view --minify` to reveal
+Currently, permission scope is quite broad. See [iam_roles.md](iam_roles.md) for details and ways to mitigate that.

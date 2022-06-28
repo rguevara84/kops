@@ -18,13 +18,16 @@ spec:
     - instanceGroup: master-us-test-1a
       name: us-test-1a
     name: events
-  kubernetesVersion: v1.14.0
+  iam: {}
+  kubelet:
+    anonymousAuth: false
+  kubernetesVersion: v1.21.0
   masterInternalName: api.internal.sharedsubnet.example.com
   masterPublicName: api.sharedsubnet.example.com
   networkCIDR: 172.20.0.0/16
   networkID: vpc-12345678
   networking:
-    kubenet: {}
+    cni: {}
   nonMasqueradeCIDR: 100.64.0.0/10
   sshAccess:
     - 0.0.0.0/0
@@ -75,5 +78,3 @@ spec:
   role: Master
   subnets:
   - us-test-1a
-
-

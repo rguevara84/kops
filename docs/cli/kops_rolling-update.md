@@ -5,61 +5,6 @@
 
 Rolling update a cluster.
 
-### Synopsis
-
-This command updates a kubernetes cluster to match the cloud and kops specifications.
-
-To perform a rolling update, you need to update the cloud resources first with the command
-`kops update cluster`.
-
-If rolling-update does not report that the cluster needs to be rolled, you can force the cluster to be
-rolled with the force flag.  Rolling update drains and validates the cluster by default.  A cluster is
-deemed validated when all required nodes are running and all pods in the kube-system namespace are operational.
-When a node is deleted, rolling-update sleeps the interval for the node type, and then tries for the same period
-of time for the cluster to be validated.  For instance, setting --master-interval=3m causes rolling-update
-to wait for 3 minutes after a master is rolled, and another 3 minutes for the cluster to stabilize and pass
-validation.
-
-Note: terraform users will need to run all of the following commands from the same directory
-`kops update cluster --target=terraform` then `terraform plan` then
-`terraform apply` prior to running `kops rolling-update cluster`.
-
-### Examples
-
-```
-  # Preview a rolling-update.
-  kops rolling-update cluster
-  
-  # Roll the currently selected kops cluster with defaults.
-  # Nodes will be drained and the cluster will be validated between node replacement.
-  kops rolling-update cluster --yes
-  
-  # Roll the k8s-cluster.example.com kops cluster,
-  # do not fail if the cluster does not validate,
-  # wait 8 min to create new node, and wait at least
-  # 8 min to validate the cluster.
-  kops rolling-update cluster k8s-cluster.example.com --yes \
-  --fail-on-validate-error="false" \
-  --master-interval=8m \
-  --node-interval=8m
-  
-  # Roll the k8s-cluster.example.com kops cluster,
-  # do not validate the cluster because of the cloudonly flag.
-  # Force the entire cluster to roll, even if rolling update
-  # reports that the cluster does not need to be rolled.
-  kops rolling-update cluster k8s-cluster.example.com --yes \
-  --cloudonly \
-  --force
-  
-  # Roll the k8s-cluster.example.com kops cluster,
-  # only roll the node instancegroup,
-  # use the new drain and validate functionality.
-  kops rolling-update cluster k8s-cluster.example.com --yes \
-  --fail-on-validate-error="false" \
-  --node-interval 8m \
-  --instance-group nodes
-```
-
 ### Options
 
 ```
@@ -69,24 +14,26 @@ Note: terraform users will need to run all of the following commands from the sa
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
+      --alsologtostderr                  log to standard error as well as files (no effect when -logtostderr=true)
       --config string                    yaml config file (default is $HOME/.kops.yaml)
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --log_file string                  If non-empty, use this log file
-      --log_file_max_size uint           Defines the maximum size a log file can grow to. Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --log_dir string                   If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                  If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint           Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
+      --one_output                       If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when opening log files
+      --skip_log_headers                 If true, avoid headers when opening log files (no effect when -logtostderr=true)
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
+      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=false) (default 2)
   -v, --v Level                          number for the log level verbosity
       --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
 ```
 
 ### SEE ALSO
 
-* [kops](kops.md)	 - kops is Kubernetes ops.
+* [kops](kops.md)	 - kOps is Kubernetes Operations.
 * [kops rolling-update cluster](kops_rolling-update_cluster.md)	 - Rolling update a cluster.
 

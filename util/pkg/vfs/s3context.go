@@ -18,7 +18,6 @@ package vfs
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"regexp"
@@ -34,16 +33,15 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-var (
-	// matches all regional naming conventions of S3:
-	// https://docs.aws.amazon.com/general/latest/gr/rande.html#s3_region
-	// TODO: perhaps make region regex more specific, i.e. (us|eu|ap|cn|ca|sa), to prevent matching bucket names that match region format?
-	//       but that will mean updating this list when AWS introduces new regions
-	s3UrlRegexp = regexp.MustCompile(`s3([-.](?P<region>\w{2}-\w+-\d{1})|[-.](?P<bucket>[\w.\-\_]+)|)?.amazonaws.com(.cn)?(?P<path>.*)?`)
-)
+// matches regional naming conventions of S3:
+// https://docs.aws.amazon.com/general/latest/gr/s3.html
+// TODO: match fips and S3 access point naming conventions
+// TODO: perhaps make region regex more specific, i.e. (us|eu|ap|cn|ca|sa), to prevent matching bucket names that match region format?
+//       but that will mean updating this list when AWS introduces new regions
+var s3UrlRegexp = regexp.MustCompile(`(s3([-.](?P<region>\w{2}(-gov)?-\w+-\d{1})|[-.](?P<bucket>[\w.\-\_]+)|)?|(?P<bucket>[\w.\-\_]+)[.]s3([.-](?P<region>\w{2}(-gov)?-\w+-\d{1}))?)[.]amazonaws[.]com([.]cn)?(?P<path>.*)?`)
 
 type S3BucketDetails struct {
 	// context is the S3Context we are associated with
@@ -85,7 +83,7 @@ func (s *S3Context) getClient(region string) (*s3.S3, error) {
 		var err error
 		endpoint := os.Getenv("S3_ENDPOINT")
 		if endpoint == "" {
-			config = aws.NewConfig().WithRegion(region)
+			config = aws.NewConfig().WithRegion(region).WithUseDualStack(true)
 			config = config.WithCredentialsChainVerboseErrors(true)
 		} else {
 			// Use customized S3 storage
@@ -96,7 +94,10 @@ func (s *S3Context) getClient(region string) (*s3.S3, error) {
 			}
 		}
 
-		sess, err := session.NewSession(config)
+		sess, err := session.NewSessionWithOptions(session.Options{
+			Config:            *config,
+			SharedConfigState: session.SharedConfigEnable,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("error starting new AWS session: %v", err)
 		}
@@ -155,13 +156,16 @@ func (s *S3Context) getDetailsForBucket(bucket string) (*S3BucketDetails, error)
 	}
 
 	awsRegion := os.Getenv("AWS_REGION")
-	if awsRegion == "" && isRunningOnEC2() {
-		region, err := getRegionFromMetadata()
-		if err != nil {
-			klog.V(2).Infof("unable to get region from metadata:%v", err)
-		} else {
-			awsRegion = region
-			klog.V(2).Infof("got region from metadata: %q", awsRegion)
+	if awsRegion == "" {
+		isEC2, err := isRunningOnEC2()
+		if isEC2 || err != nil {
+			region, err := getRegionFromMetadata()
+			if err != nil {
+				klog.V(2).Infof("unable to get region from metadata:%v", err)
+			} else {
+				awsRegion = region
+				klog.V(2).Infof("got region from metadata: %q", awsRegion)
+			}
 		}
 	}
 
@@ -281,7 +285,10 @@ func bruteforceBucketLocation(region *string, request *s3.GetBucketLocationInput
 	config := &aws.Config{Region: region}
 	config = config.WithCredentialsChainVerboseErrors(true)
 
-	session, err := session.NewSession(config)
+	session, err := session.NewSessionWithOptions(session.Options{
+		Config:            *config,
+		SharedConfigState: session.SharedConfigEnable,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("error creating aws session: %v", err)
 	}
@@ -317,27 +324,25 @@ func bruteforceBucketLocation(region *string, request *s3.GetBucketLocationInput
 // isRunningOnEC2 determines if we could be running on EC2.
 // It is used to avoid a call to the metadata service to get the current region,
 // because that call is slow if not running on EC2
-func isRunningOnEC2() bool {
+func isRunningOnEC2() (bool, error) {
 	if runtime.GOOS == "linux" {
 		// Approach based on https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/identify_ec2_instances.html
-		productUUID, err := ioutil.ReadFile("/sys/devices/virtual/dmi/id/product_uuid")
+		productUUID, err := os.ReadFile("/sys/devices/virtual/dmi/id/product_uuid")
 		if err != nil {
 			klog.V(2).Infof("unable to read /sys/devices/virtual/dmi/id/product_uuid, assuming not running on EC2: %v", err)
-			return false
+			return false, err
 		}
 
 		s := strings.ToLower(strings.TrimSpace(string(productUUID)))
 		if strings.HasPrefix(s, "ec2") {
 			klog.V(2).Infof("product_uuid is %q, assuming running on EC2", s)
-			return true
-		} else {
-			klog.V(2).Infof("product_uuid is %q, assuming not running on EC2", s)
-			return false
+			return true, nil
 		}
-	} else {
-		klog.V(2).Infof("GOOS=%q, assuming not running on EC2", runtime.GOOS)
-		return false
+		klog.V(2).Infof("product_uuid is %q, assuming not running on EC2", s)
+		return false, nil
 	}
+	klog.V(2).Infof("GOOS=%q, assuming not running on EC2", runtime.GOOS)
+	return false, nil
 }
 
 // getRegionFromMetadata queries the metadata service for the current region, if running in EC2
@@ -357,7 +362,6 @@ func getRegionFromMetadata() (string, error) {
 
 	metadata := ec2metadata.New(metadataSession)
 	metadataRegion, err := metadata.Region()
-
 	if err != nil {
 		return "", fmt.Errorf("unable to get region from metadata: %v", err)
 	}
@@ -387,7 +391,9 @@ func VFSPath(url string) (string, error) {
 
 	captured := map[string]string{}
 	for i, value := range result {
-		captured[groupNames[i]] = value
+		if value != "" {
+			captured[groupNames[i]] = value
+		}
 	}
 	bucket := captured["bucket"]
 	path := captured["path"]

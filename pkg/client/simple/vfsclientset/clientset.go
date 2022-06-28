@@ -17,8 +17,11 @@ limitations under the License.
 package vfsclientset
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	"k8s.io/klog/v2"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kops/pkg/apis/kops"
@@ -31,8 +34,7 @@ import (
 )
 
 type VFSClientset struct {
-	basePath  vfs.Path
-	allowList bool
+	basePath vfs.Path
 }
 
 var _ simple.Clientset = &VFSClientset{}
@@ -42,22 +44,22 @@ func (c *VFSClientset) clusters() *ClusterVFS {
 }
 
 // GetCluster implements the GetCluster method of simple.Clientset for a VFS-backed state store
-func (c *VFSClientset) GetCluster(name string) (*kops.Cluster, error) {
+func (c *VFSClientset) GetCluster(ctx context.Context, name string) (*kops.Cluster, error) {
 	return c.clusters().Get(name, metav1.GetOptions{})
 }
 
 // UpdateCluster implements the UpdateCluster method of simple.Clientset for a VFS-backed state store
-func (c *VFSClientset) UpdateCluster(cluster *kops.Cluster, status *kops.ClusterStatus) (*kops.Cluster, error) {
+func (c *VFSClientset) UpdateCluster(ctx context.Context, cluster *kops.Cluster, status *kops.ClusterStatus) (*kops.Cluster, error) {
 	return c.clusters().Update(cluster, status)
 }
 
 // CreateCluster implements the CreateCluster method of simple.Clientset for a VFS-backed state store
-func (c *VFSClientset) CreateCluster(cluster *kops.Cluster) (*kops.Cluster, error) {
+func (c *VFSClientset) CreateCluster(ctx context.Context, cluster *kops.Cluster) (*kops.Cluster, error) {
 	return c.clusters().Create(cluster)
 }
 
 // ListClusters implements the ListClusters method of simple.Clientset for a VFS-backed state store
-func (c *VFSClientset) ListClusters(options metav1.ListOptions) (*kops.ClusterList, error) {
+func (c *VFSClientset) ListClusters(ctx context.Context, options metav1.ListOptions) (*kops.ClusterList, error) {
 	return c.clusters().List(options)
 }
 
@@ -74,31 +76,54 @@ func (c *VFSClientset) InstanceGroupsFor(cluster *kops.Cluster) kopsinternalvers
 	return newInstanceGroupVFS(c, cluster)
 }
 
+func (c *VFSClientset) AddonsFor(cluster *kops.Cluster) simple.AddonsClient {
+	return newAddonsVFS(c, cluster)
+}
+
 func (c *VFSClientset) SecretStore(cluster *kops.Cluster) (fi.SecretStore, error) {
-	configBase, err := registry.ConfigBase(cluster)
-	if err != nil {
-		return nil, err
+	if cluster.Spec.SecretStore == "" {
+		configBase, err := registry.ConfigBase(cluster)
+		if err != nil {
+			return nil, err
+		}
+		basedir := configBase.Join("secrets")
+		return secrets.NewVFSSecretStore(cluster, basedir), nil
+	} else {
+		storePath, err := vfs.Context.BuildVfsPath(cluster.Spec.SecretStore)
+		return secrets.NewVFSSecretStore(cluster, storePath), err
 	}
-	basedir := configBase.Join("secrets")
-	return secrets.NewVFSSecretStore(cluster, basedir), nil
 }
 
 func (c *VFSClientset) KeyStore(cluster *kops.Cluster) (fi.CAStore, error) {
-	configBase, err := registry.ConfigBase(cluster)
+	basedir, err := pkiPath(cluster)
 	if err != nil {
 		return nil, err
 	}
-	basedir := configBase.Join("pki")
-	return fi.NewVFSCAStore(cluster, basedir, c.allowList), nil
+
+	klog.V(8).Infof("Using keystore path: %q", basedir)
+
+	return fi.NewVFSCAStore(cluster, basedir), err
 }
 
 func (c *VFSClientset) SSHCredentialStore(cluster *kops.Cluster) (fi.SSHCredentialStore, error) {
-	configBase, err := registry.ConfigBase(cluster)
+	basedir, err := pkiPath(cluster)
 	if err != nil {
 		return nil, err
 	}
-	basedir := configBase.Join("pki")
 	return fi.NewVFSSSHCredentialStore(cluster, basedir), nil
+}
+
+func pkiPath(cluster *kops.Cluster) (vfs.Path, error) {
+	if cluster.Spec.KeyStore == "" {
+		configBase, err := registry.ConfigBase(cluster)
+		if err != nil {
+			return nil, err
+		}
+		return configBase.Join("pki"), nil
+	} else {
+		storePath, err := vfs.Context.BuildVfsPath(cluster.Spec.KeyStore)
+		return storePath, err
+	}
 }
 
 func DeleteAllClusterState(basePath vfs.Path) error {
@@ -117,10 +142,14 @@ func DeleteAllClusterState(basePath vfs.Path) error {
 			continue
 		}
 
-		if relativePath == "config" || relativePath == "cluster.spec" {
+		// "cluster.spec" was written by kOps 1.21 and earlier.
+		if relativePath == "config" || relativePath == "cluster.spec" || relativePath == "cluster-completed.spec" || relativePath == registry.PathKopsVersionUpdated {
 			continue
 		}
 		if strings.HasPrefix(relativePath, "addons/") {
+			continue
+		}
+		if strings.HasPrefix(relativePath, "clusteraddons/") {
 			continue
 		}
 		if strings.HasPrefix(relativePath, "pki/") {
@@ -130,6 +159,9 @@ func DeleteAllClusterState(basePath vfs.Path) error {
 			continue
 		}
 		if strings.HasPrefix(relativePath, "instancegroup/") {
+			continue
+		}
+		if strings.HasPrefix(relativePath, "igconfig/") {
 			continue
 		}
 		if strings.HasPrefix(relativePath, "manifests/") {
@@ -153,7 +185,66 @@ func DeleteAllClusterState(basePath vfs.Path) error {
 	return nil
 }
 
-func (c *VFSClientset) DeleteCluster(cluster *kops.Cluster) error {
+func deleteAllPaths(basePath vfs.Path) error {
+	paths, err := basePath.ReadTree()
+	if err != nil {
+		return fmt.Errorf("error listing files in state store: %v", err)
+	}
+
+	for _, path := range paths {
+		err = path.Remove()
+		if err != nil {
+			return fmt.Errorf("error deleting cluster file %s: %v", path, err)
+		}
+	}
+
+	return nil
+}
+
+func (c *VFSClientset) DeleteCluster(ctx context.Context, cluster *kops.Cluster) error {
+	if cluster.Spec.ServiceAccountIssuerDiscovery != nil {
+		discoveryStore := cluster.Spec.ServiceAccountIssuerDiscovery.DiscoveryStore
+		if discoveryStore != "" {
+			path, err := vfs.Context.BuildVfsPath(discoveryStore)
+			if err != nil {
+				return err
+			}
+
+			err = path.Join("openid/v1/jwks").Remove()
+			if err != nil {
+				return err
+			}
+			err = path.Join(".well-known/openid-configuration").Remove()
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	secretStore := cluster.Spec.SecretStore
+	if secretStore != "" {
+		path, err := vfs.Context.BuildVfsPath(secretStore)
+		if err != nil {
+			return err
+		}
+		err = deleteAllPaths(path)
+		if err != nil {
+			return err
+		}
+	}
+
+	keyStore := cluster.Spec.KeyStore
+	if keyStore != "" && keyStore != secretStore {
+		path, err := vfs.Context.BuildVfsPath(keyStore)
+		if err != nil {
+			return err
+		}
+		err = deleteAllPaths(path)
+		if err != nil {
+			return err
+		}
+	}
+
 	configBase, err := registry.ConfigBase(cluster)
 	if err != nil {
 		return err
@@ -162,10 +253,9 @@ func (c *VFSClientset) DeleteCluster(cluster *kops.Cluster) error {
 	return DeleteAllClusterState(configBase)
 }
 
-func NewVFSClientset(basePath vfs.Path, allowList bool) simple.Clientset {
+func NewVFSClientset(basePath vfs.Path) simple.Clientset {
 	vfsClientset := &VFSClientset{
-		basePath:  basePath,
-		allowList: allowList,
+		basePath: basePath,
 	}
 	return vfsClientset
 }

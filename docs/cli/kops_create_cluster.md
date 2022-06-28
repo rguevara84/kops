@@ -7,113 +7,121 @@ Create a Kubernetes cluster.
 
 ### Synopsis
 
-Create a kubernetes cluster using command line flags. This command creates cloud based resources such as networks and virtual machines. Once the infrastructure is in place Kubernetes is installed on the virtual machines.
+Create a Kubernetes cluster using command line flags. This command creates cloud based resources such as networks and virtual machines. Once the infrastructure is in place Kubernetes is installed on the virtual machines.
 
  These operations are done in parallel and rely on eventual consistency.
 
 ```
-kops create cluster [flags]
+kops create cluster [CLUSTER] [flags]
 ```
 
 ### Examples
 
 ```
-  # Create a cluster in AWS
-  kops create cluster --name=kubernetes-cluster.example.com \
-  --state=s3://kops-state-1234 --zones=eu-west-1a \
+  # Create a cluster in AWS in a single zone.
+  kops create cluster --name=k8s-cluster.example.com \
+  --state=s3://my-state-store \
+  --zones=us-east-1a \
   --node-count=2
   
-  # Create a cluster in AWS that has HA masters.  This cluster
-  # will be setup with an internal networking in a private VPC.
-  # A bastion instance will be setup to provide instance access.
-  
-  export NODE_SIZE=${NODE_SIZE:-m4.large}
-  export MASTER_SIZE=${MASTER_SIZE:-m4.large}
-  export ZONES=${ZONES:-"us-east-1d,us-east-1b,us-east-1c"}
+  # Create a cluster in AWS with High Availability masters. This cluster
+  # has also been configured for private networking in a kops-managed VPC.
+  # The bastion flag is set to create an entrypoint for admins to SSH.
   export KOPS_STATE_STORE="s3://my-state-store"
-  kops create cluster k8s-clusters.example.com \
+  export MASTER_SIZE="c5.large"
+  export NODE_SIZE="m5.large"
+  export ZONES="us-east-1a,us-east-1b,us-east-1c"
+  kops create cluster k8s-cluster.example.com \
   --node-count 3 \
   --zones $ZONES \
   --node-size $NODE_SIZE \
   --master-size $MASTER_SIZE \
   --master-zones $ZONES \
-  --networking weave \
+  --networking cilium \
   --topology private \
   --bastion="true" \
   --yes
   
-  # Create cluster in GCE.
-  # This is an alpha feature.
-  export KOPS_STATE_STORE="gs://mybucket-kops"
-  export ZONES=${MASTER_ZONES:-"us-east1-b,us-east1-c,us-east1-d"}
-  export KOPS_FEATURE_FLAGS=AlphaAllowGCE
-  
-  kops create cluster kubernetes-k8s-gce.example.com
+  # Create a cluster in Digital Ocean.
+  export KOPS_STATE_STORE="do://my-state-store"
+  export ZONES="NYC1"
+  kops create cluster k8s-cluster.example.com \
+  --cloud digitalocean \
   --zones $ZONES \
   --master-zones $ZONES \
-  --node-count 3
-  --project my-gce-project \
-  --image "ubuntu-os-cloud/ubuntu-1604-xenial-v20170202" \
+  --node-count 3 \
   --yes
-  # Create manifest for a cluster in AWS
-  kops create cluster --name=kubernetes-cluster.example.com \
-  --state=s3://kops-state-1234 --zones=eu-west-1a \
-  --node-count=2 --dry-run -oyaml
+  
+  # Generate a cluster spec to apply later.
+  # Run the following, then: kops create -f filename.yaml
+  kops create cluster --name=k8s-cluster.example.com \
+  --state=s3://my-state-store \
+  --zones=us-east-1a \
+  --node-count=2 \
+  --dry-run \
+  -oyaml > filename.yaml
 ```
 
 ### Options
 
 ```
-      --admin-access strings             Restrict API access to this CIDR.  If not set, access will not be restricted by IP. (default [0.0.0.0/0])
-      --api-loadbalancer-type string     Sets the API loadbalancer type to either 'public' or 'internal'
-      --api-ssl-certificate string       Currently only supported in AWS. Sets the ARN of the SSL Certificate to use for the API server loadbalancer.
+      --admin-access strings             Restrict API access to this CIDR.  If not set, access will not be restricted by IP. (default [0.0.0.0/0,::/0])
+      --api-loadbalancer-class string    Class of loadbalancer for the Kubernetes API (AWS only): classic or network
+      --api-loadbalancer-type string     Type of loadbalancer for the Kubernetes API: public or internal
+      --api-ssl-certificate string       ARN of the SSL Certificate to use for the Kubernetes API loadbalancer (AWS only)
       --associate-public-ip              Specify --associate-public-ip=[true|false] to enable/disable association of public IP for master ASG and nodes. Default is 'true'.
-      --authorization string             Authorization mode to use: AlwaysAllow or RBAC (default "RBAC")
-      --bastion                          Pass the --bastion flag to enable a bastion instance group. Only applies to private topology.
+      --authorization string             Authorization mode: AlwaysAllow or RBAC (default "RBAC")
+      --bastion                          Enable a bastion instance group. Only applies to private topology.
       --channel string                   Channel for default versions and configuration to use (default "stable")
-      --cloud string                     Cloud provider to use - gce, aws, vsphere, openstack
-      --cloud-labels string              A list of KV pairs used to tag all instance groups in AWS (e.g. "Owner=John Doe,Team=Some Team").
-      --disable-subnet-tags              Set to disable automatic subnet tagging
-      --dns string                       DNS hosted zone to use: public|private. (default "Public")
-      --dns-zone string                  DNS hosted zone to use (defaults to longest matching zone)
+      --cloud string                     Cloud provider to use - aws, digitalocean, gce, openstack
+      --cloud-labels string              A list of key/value pairs used to tag all instance groups (for example "Owner=John Doe,Team=Some Team").
+      --container-runtime string         Container runtime to use: containerd, docker
+      --disable-subnet-tags              Disable automatic subnet tagging
+      --discovery-store string           A public location where we publish OIDC-compatible discovery information under a cluster-specific directory. Enables IRSA in AWS.
+      --dns string                       DNS type to use: public or private (default "Public")
+      --dns-zone string                  DNS hosted zone (defaults to longest matching zone)
       --dry-run                          If true, only print the object that would be sent, without sending it. This flag can be used to create a cluster YAML or JSON manifest.
-      --encrypt-etcd-storage             Generate key in aws kms and use it for encrypt etcd volumes
-      --etcd-storage-type string         The default storage type for etc members
+      --encrypt-etcd-storage             Generate key in AWS KMS and use it for encrypt etcd volumes
+      --etcd-storage-type string         The default storage type for etcd members
+      --gce-service-account string       Service account with which the GCE VM runs. Warning: if not set, VMs will run as default compute service account.
   -h, --help                             help for cluster
-      --image string                     Image to use for all instances.
+      --image string                     Machine image for all instances
+      --ipv6                             Use IPv6 for the pod network (AWS only)
       --kubernetes-version string        Version of kubernetes to run (defaults to version in channel)
-      --master-count int32               Set the number of masters.  Defaults to one master per master-zone
-      --master-public-name string        Sets the public master public name
-      --master-security-groups strings   Add precreated additional security groups to masters.
-      --master-size string               Set instance size for masters
-      --master-tenancy string            The tenancy of the master group on AWS. Can either be default or dedicated.
-      --master-volume-size int32         Set instance volume size (in GB) for masters
+      --master-count int32               Number of masters. Defaults to one master per master-zone
+      --master-image string              Machine image for masters. Takes precedence over --image
+      --master-public-name string        Domain name of the public Kubernetes API
+      --master-security-groups strings   Additional precreated security groups to add to masters.
+      --master-size string               Machine type for masters
+      --master-tenancy string            Tenancy of the master group (AWS only): default or dedicated
+      --master-volume-size int32         Instance volume size (in GB) for masters
       --master-zones strings             Zones in which to run masters (must be an odd number)
-      --model string                     Models to apply (separate multiple models with commas) (default "proto,cloudup")
-      --network-cidr string              Set to override the default network CIDR
-      --networking string                Networking mode to use.  kubenet (default), classic, external, kopeio-vxlan (or kopeio), weave, flannel-vxlan (or flannel), flannel-udp, calico, canal, kube-router, romana, amazon-vpc-routed-eni, cilium, cni. (default "kubenet")
-      --node-count int32                 Set the number of nodes
-      --node-security-groups strings     Add precreated additional security groups to nodes.
-      --node-size string                 Set instance size for nodes
-      --node-tenancy string              The tenancy of the node group on AWS. Can be either default or dedicated.
-      --node-volume-size int32           Set instance volume size (in GB) for nodes
+      --network-cidr string              Network CIDR to use
+      --networking string                Networking mode.  kubenet, external, weave, flannel-vxlan (or flannel), flannel-udp, calico, canal, kube-router, amazonvpc, cilium, cilium-etcd, cni. (default "kubenet")
+      --node-count int32                 Total number of worker nodes. Defaults to one node per zone
+      --node-image string                Machine image for worker nodes. Takes precedence over --image
+      --node-security-groups strings     Additional precreated security groups to add to worker nodes.
+      --node-size string                 Machine type for worker nodes
+      --node-tenancy string              Tenancy of the node group (AWS only): default or dedicated
+      --node-volume-size int32           Instance volume size (in GB) for worker nodes
       --os-dns-servers string            comma separated list of DNS Servers which is used in network
-      --os-ext-net string                The name of the external network to use with the openstack router
-      --os-ext-subnet string             The name of the external floating subnet to use with the openstack router
-      --os-kubelet-ignore-az             If true kubernetes may attach volumes across availability zones
-      --os-lb-floating-subnet string     The name of the external subnet to use with the kubernetes api
-      --os-network string                The ID of the existing OpenStack network to use
-      --os-octavia                       If true octavia loadbalancer api will be used
+      --os-ext-net string                External network to use with the openstack router
+      --os-ext-subnet string             External floating subnet to use with the openstack router
+      --os-kubelet-ignore-az             Attach volumes across availability zones
+      --os-lb-floating-subnet string     External subnet to use with the kubernetes api
+      --os-network string                ID of the existing OpenStack network to use
+      --os-octavia                       Use octavia loadbalancer API
+      --os-octavia-provider string       Octavia provider to use
       --out string                       Path to write any local output
-  -o, --output string                    Output format. One of json|yaml. Used with the --dry-run flag.
+  -o, --output string                    Output format. One of json or yaml. Used with the --dry-run flag.
       --project string                   Project to use (must be set on GCE)
-      --ssh-access strings               Restrict SSH access to this CIDR.  If not set, access will not be restricted by IP. (default [0.0.0.0/0])
-      --ssh-public-key string            SSH public key to use (defaults to ~/.ssh/id_rsa.pub on AWS)
-      --subnets strings                  Set to use shared subnets
-      --target string                    Valid targets: direct, terraform, cloudformation. Set this flag to terraform if you want kops to generate terraform (default "direct")
-  -t, --topology string                  Controls network topology for the cluster: public|private. (default "public")
-      --utility-subnets strings          Set to use shared utility subnets
-      --vpc string                       Set to use a shared VPC
+      --ssh-access strings               Restrict SSH access to this CIDR.  If not set, uses the value of the admin-access flag.
+      --ssh-public-key string            SSH public key to use
+      --subnets strings                  Shared subnets to use
+      --target string                    Valid targets: direct, terraform, cloudformation. Set this flag to terraform if you want kOps to generate terraform (default "direct")
+  -t, --topology string                  Network topology for the cluster: public or private (default "public")
+      --utility-subnets strings          Shared utility subnets to use
+      --vpc string                       Shared VPC to use
   -y, --yes                              Specify --yes to immediately create the cluster
       --zones strings                    Zones in which to run the cluster
 ```
@@ -121,18 +129,20 @@ kops create cluster [flags]
 ### Options inherited from parent commands
 
 ```
-      --alsologtostderr                  log to standard error as well as files
+      --add_dir_header                   If true, adds the file directory to the header of the log messages
+      --alsologtostderr                  log to standard error as well as files (no effect when -logtostderr=true)
       --config string                    yaml config file (default is $HOME/.kops.yaml)
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
-      --log_dir string                   If non-empty, write log files in this directory
-      --log_file string                  If non-empty, use this log file
-      --log_file_max_size uint           Defines the maximum size a log file can grow to. Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
+      --log_dir string                   If non-empty, write log files in this directory (no effect when -logtostderr=true)
+      --log_file string                  If non-empty, use this log file (no effect when -logtostderr=true)
+      --log_file_max_size uint           Defines the maximum size a log file can grow to (no effect when -logtostderr=true). Unit is megabytes. If the value is 0, the maximum file size is unlimited. (default 1800)
       --logtostderr                      log to standard error instead of files (default true)
       --name string                      Name of cluster. Overrides KOPS_CLUSTER_NAME environment variable
+      --one_output                       If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
       --skip_headers                     If true, avoid header prefixes in the log messages
-      --skip_log_headers                 If true, avoid headers when opening log files
+      --skip_log_headers                 If true, avoid headers when opening log files (no effect when -logtostderr=true)
       --state string                     Location of state storage (kops 'config' file). Overrides KOPS_STATE_STORE environment variable
-      --stderrthreshold severity         logs at or above this threshold go to stderr (default 2)
+      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=false) (default 2)
   -v, --v Level                          number for the log level verbosity
       --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
 ```

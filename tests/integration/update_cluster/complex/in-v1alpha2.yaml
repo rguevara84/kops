@@ -8,10 +8,20 @@ spec:
     loadBalancer:
       type: Public
       additionalSecurityGroups:
-      - sg-exampleid3
-      - sg-exampleid4
+      - sg-exampleid5
+      - sg-exampleid6
+      crossZoneLoadBalancing: true
+      class: Network
+      sslCertificate: arn:aws-test:acm:us-test-1:000000000000:certificate/123456789012-1234-1234-1234-12345678
+      sslPolicy: ELBSecurityPolicy-2016-08
+      subnets:
+        - name: us-test-1a
+          allocationId: eipalloc-012345a678b9cdefa
+      accessLog:
+        bucket: access-log-example
   kubernetesApiAccess:
-  - 0.0.0.0/0
+  - 1.1.1.0/24
+  - pl-44444444
   channel: stable
   cloudProvider: aws
   cloudLabels:
@@ -21,27 +31,51 @@ spec:
   etcdClusters:
   - etcdMembers:
     - instanceGroup: master-us-test-1a
-      name: us-test-1a
+      name: a
     name: main
   - etcdMembers:
     - instanceGroup: master-us-test-1a
-      name: us-test-1a
+      name: a
     name: events
+  iam:
+    permissionsBoundary: arn:aws-test:iam::000000000000:policy/boundaries
   kubeAPIServer:
     serviceNodePortRange: 28000-32767
     auditWebhookBatchThrottleQps: 3.14
-  kubernetesVersion: v1.14.0
+    cpuRequest: 200m
+    cpuLimit: 500m
+    memoryRequest: 800Mi
+    memoryLimit: 1000Mi
+  kubelet:
+    anonymousAuth: false
+  kubernetesVersion: v1.21.0
   masterInternalName: api.internal.complex.example.com
   masterPublicName: api.complex.example.com
   networkCIDR: 172.20.0.0/16
+  additionalNetworkCIDRs:
+  - 10.1.0.0/16
+  - 10.2.0.0/16
   networking:
-    kubenet: {}
+    cni: {}
   nodePortAccess:
   - 1.2.3.4/32
   - 10.20.30.0/24
   nonMasqueradeCIDR: 100.64.0.0/10
+  serviceOIDCProvider:
+    issuerURL: https://oidc.example.com/foo
+    issuerCAThumbprints:
+      - 990F4193972F2BECF12DDEDA5237F9C952F20D9E
   sshAccess:
-  - 0.0.0.0/0
+  - 1.1.1.1/32
+  - pl-66666666
+
+  sshKeyName: ""
+  target:
+    terraform:
+      providerExtraConfig:
+        max_retries: "10"
+      filesProviderExtraConfig:
+        profile: "foo"
   topology:
     masters: public
     nodes: public
@@ -49,6 +83,18 @@ spec:
   - cidr: 172.20.32.0/19
     name: us-test-1a
     type: Public
+    zone: us-test-1a
+  - cidr: 172.20.64.0/19
+    name: us-east-1a-private
+    type: Private
+    zone: us-test-1a
+    egress: tgw-123456
+    additionalRoutes:
+    - cidr: "192.168.1.10/32"
+      target: "tgw-0123456"
+  - cidr: 172.20.96.0/19
+    name: us-east-1a-utility
+    type: Utility
     zone: us-test-1a
 
 ---
@@ -65,16 +111,35 @@ spec:
   - sg-exampleid3
   - sg-exampleid4
   associatePublicIp: true
+  externalLoadBalancers:
+    - loadBalancerName: my-external-lb-1
   suspendProcesses:
   - AZRebalance
   image: kope.io/k8s-1.4-debian-jessie-amd64-hvm-ebs-2016-10-21
   machineType: t2.medium
   maxSize: 2
   minSize: 2
+  packages:
+  - nfs-common
   role: Node
   subnets:
   - us-test-1a
   detailedInstanceMonitoring: true
+  rootVolumeEncryption: true
+  cpuCredits: standard
+  volumes:
+  - device: /dev/xvdd
+    deleteOnTermination: false
+    size: 20
+    type: gp2
+    encrypted: true
+    key: arn:aws-test:kms:us-test-1:000000000000:key/1234abcd-12ab-34cd-56ef-1234567890ab
+  additionalUserData:
+  - name: myscript.sh
+    type: text/x-shellscript
+    content: |
+      #!/bin/sh
+      echo "nodes: The time is now $(date -R)!" | tee /root/output.txt
 
 ---
 
@@ -87,10 +152,23 @@ metadata:
     kops.k8s.io/cluster: complex.example.com
 spec:
   associatePublicIp: true
+  externalLoadBalancers:
+    - loadBalancerName: my-external-lb-1
   image: kope.io/k8s-1.4-debian-jessie-amd64-hvm-ebs-2016-10-21
   machineType: m3.medium
   maxSize: 1
   minSize: 1
   role: Master
+  rootVolumeEncryption: true
+  rootVolumeEncryptionKey: arn:aws-test:kms:us-test-1:000000000000:key/1234abcd-12ab-34cd-56ef-1234567890ab
   subnets:
   - us-test-1a
+  instanceMetadata:
+    httpTokens: required
+    httpPutResponseHopLimit: 1
+  additionalUserData:
+  - name: myscript.sh
+    type: text/x-shellscript
+    content: |
+      #!/bin/sh
+      echo "nodes: The time is now $(date -R)!" | tee /root/output.txt

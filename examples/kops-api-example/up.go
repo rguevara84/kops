@@ -17,9 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/client/simple/vfsclientset"
 	"k8s.io/kops/upup/pkg/fi"
@@ -27,17 +29,18 @@ import (
 	"k8s.io/kops/upup/pkg/fi/utils"
 )
 
-func up() error {
-	allowList := true
-	clientset := vfsclientset.NewVFSClientset(registryBase, allowList)
+func up(ctx context.Context) error {
+	clientset := vfsclientset.NewVFSClientset(registryBase)
 
 	cluster := &api.Cluster{}
 	cluster.ObjectMeta.Name = clusterName
 	cluster.Spec = api.ClusterSpec{
-		Channel:       "stable",
-		CloudProvider: "aws",
-		ConfigBase:    registryBase.Join(cluster.ObjectMeta.Name).Path(),
-		Topology:      &api.TopologySpec{},
+		Channel: "stable",
+		CloudProvider: api.CloudProviderSpec{
+			AWS: &api.AWSSpec{},
+		},
+		ConfigBase: registryBase.Join(cluster.ObjectMeta.Name).Path(),
+		Topology:   &api.TopologySpec{},
 	}
 	cluster.Spec.Topology.Masters = api.TopologyPublic
 	cluster.Spec.Topology.Nodes = api.TopologyPublic
@@ -51,11 +54,11 @@ func up() error {
 	}
 
 	for _, etcdClusterName := range cloudup.EtcdClusters {
-		etcdCluster := &api.EtcdClusterSpec{
+		etcdCluster := api.EtcdClusterSpec{
 			Name: etcdClusterName,
 		}
 		for _, masterZone := range masterZones {
-			etcdMember := &api.EtcdMemberSpec{
+			etcdMember := api.EtcdMemberSpec{
 				Name:          masterZone,
 				InstanceGroup: fi.String(masterZone),
 			}
@@ -64,11 +67,16 @@ func up() error {
 		cluster.Spec.EtcdClusters = append(cluster.Spec.EtcdClusters, etcdCluster)
 	}
 
-	if err := cloudup.PerformAssignments(cluster); err != nil {
+	cloud, err := cloudup.BuildCloud(cluster)
+	if err != nil {
 		return err
 	}
 
-	_, err := clientset.CreateCluster(cluster)
+	if err := cloudup.PerformAssignments(cluster, cloud); err != nil {
+		return err
+	}
+
+	_, err = clientset.CreateCluster(ctx, cluster)
 	if err != nil {
 		return err
 	}
@@ -81,7 +89,7 @@ func up() error {
 			Role:    api.InstanceGroupRoleMaster,
 			Subnets: masterZones,
 		}
-		_, err := clientset.InstanceGroupsFor(cluster).Create(ig)
+		_, err := clientset.InstanceGroupsFor(cluster).Create(ctx, ig, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}
@@ -96,7 +104,7 @@ func up() error {
 			Subnets: nodeZones,
 		}
 
-		_, err := clientset.InstanceGroupsFor(cluster).Create(ig)
+		_, err := clientset.InstanceGroupsFor(cluster).Create(ctx, ig, metav1.CreateOptions{})
 		if err != nil {
 			return err
 		}
@@ -110,11 +118,11 @@ func up() error {
 	// Add a public key
 	{
 		f := utils.ExpandPath(sshPublicKey)
-		pubKey, err := ioutil.ReadFile(f)
+		pubKey, err := os.ReadFile(f)
 		if err != nil {
 			return fmt.Errorf("error reading SSH key file %q: %v", f, err)
 		}
-		err = sshCredentialStore.AddSSHPublicKey(fi.SecretNameSSHPrimary, pubKey)
+		err = sshCredentialStore.AddSSHPublicKey(pubKey)
 		if err != nil {
 			return fmt.Errorf("error adding SSH public key: %v", err)
 		}

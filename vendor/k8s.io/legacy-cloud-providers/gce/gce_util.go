@@ -1,3 +1,6 @@
+//go:build !providerless
+// +build !providerless
+
 /*
 Copyright 2017 The Kubernetes Authors.
 
@@ -17,6 +20,7 @@ limitations under the License.
 package gce
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -26,16 +30,25 @@ import (
 	"strings"
 	"sync"
 
+	"cloud.google.com/go/compute/metadata"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/meta"
 	"github.com/GoogleCloudPlatform/k8s-cloud-provider/pkg/cloud/mock"
-	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/sets"
-
-	"cloud.google.com/go/compute/metadata"
 	compute "google.golang.org/api/compute/v1"
 	"google.golang.org/api/googleapi"
+
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/client-go/kubernetes/fake"
+	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	servicehelper "k8s.io/cloud-provider/service/helpers"
+	netutils "k8s.io/utils/net"
+)
+
+const (
+	// NetLBFinalizerV2 is the finalizer used by newer controllers that manage L4 External LoadBalancer services.
+	NetLBFinalizerV2 = "gke.networking.io/l4-netlb-v2"
 )
 
 func fakeGCECloud(vals TestClusterValues) (*Cloud, error) {
@@ -43,6 +56,7 @@ func fakeGCECloud(vals TestClusterValues) (*Cloud, error) {
 
 	gce.AlphaFeatureGate = NewAlphaFeatureGate([]string{})
 	gce.nodeInformerSynced = func() bool { return true }
+	gce.client = fake.NewSimpleClientset()
 
 	mockGCE := gce.c.(*cloud.MockGCE)
 	mockGCE.MockTargetPools.AddInstanceHook = mock.AddInstanceHook
@@ -73,6 +87,34 @@ func fakeGCECloud(vals TestClusterValues) (*Cloud, error) {
 	return gce, nil
 }
 
+func registerTargetPoolAddInstanceHook(gce *Cloud, callback func(*compute.TargetPoolsAddInstanceRequest)) error {
+	mockGCE, ok := gce.c.(*cloud.MockGCE)
+	if !ok {
+		return fmt.Errorf("couldn't cast cloud to mockGCE: %#v", gce)
+	}
+	existingHandler := mockGCE.MockTargetPools.AddInstanceHook
+	hook := func(ctx context.Context, key *meta.Key, req *compute.TargetPoolsAddInstanceRequest, m *cloud.MockTargetPools) error {
+		callback(req)
+		return existingHandler(ctx, key, req, m)
+	}
+	mockGCE.MockTargetPools.AddInstanceHook = hook
+	return nil
+}
+
+func registerTargetPoolRemoveInstanceHook(gce *Cloud, callback func(*compute.TargetPoolsRemoveInstanceRequest)) error {
+	mockGCE, ok := gce.c.(*cloud.MockGCE)
+	if !ok {
+		return fmt.Errorf("couldn't cast cloud to mockGCE: %#v", gce)
+	}
+	existingHandler := mockGCE.MockTargetPools.RemoveInstanceHook
+	hook := func(ctx context.Context, key *meta.Key, req *compute.TargetPoolsRemoveInstanceRequest, m *cloud.MockTargetPools) error {
+		callback(req)
+		return existingHandler(ctx, key, req, m)
+	}
+	mockGCE.MockTargetPools.RemoveInstanceHook = hook
+	return nil
+}
+
 type gceInstance struct {
 	Zone  string
 	Name  string
@@ -83,7 +125,7 @@ type gceInstance struct {
 
 var (
 	autoSubnetIPRange = &net.IPNet{
-		IP:   net.ParseIP("10.128.0.0"),
+		IP:   netutils.ParseIPSloppy("10.128.0.0"),
 		Mask: net.CIDRMask(9, 32),
 	}
 )
@@ -108,7 +150,7 @@ func getProjectAndZone() (string, string, error) {
 }
 
 func (g *Cloud) raiseFirewallChangeNeededEvent(svc *v1.Service, cmd string) {
-	msg := fmt.Sprintf("Firewall change required by network admin: `%v`", cmd)
+	msg := fmt.Sprintf("Firewall change required by security admin: `%v`", cmd)
 	if g.eventRecorder != nil && svc != nil {
 		g.eventRecorder.Event(svc, v1.EventTypeNormal, "LoadBalancerManualChange", msg)
 	}
@@ -244,18 +286,6 @@ func makeGoogleAPINotFoundError(message string) error {
 	return &googleapi.Error{Code: http.StatusNotFound, Message: message}
 }
 
-// TODO(#51665): Remove this once Network Tiers becomes Beta in GCP.
-func handleAlphaNetworkTierGetError(err error) (string, error) {
-	if isForbidden(err) {
-		// Network tier is still an Alpha feature in GCP, and not every project
-		// is whitelisted to access the API. If we cannot access the API, just
-		// assume the tier is premium.
-		return cloud.NetworkTierDefault.ToGCEValue(), nil
-	}
-	// Can't get the network tier, just return an error.
-	return "", err
-}
-
 // containsCIDR returns true if outer contains inner.
 func containsCIDR(outer, inner *net.IPNet) bool {
 	return outer.Contains(firstIPInRange(inner)) && outer.Contains(lastIPInRange(inner))
@@ -280,7 +310,7 @@ func lastIPInRange(cidr *net.IPNet) net.IP {
 func subnetsInCIDR(subnets []*compute.Subnetwork, cidr *net.IPNet) ([]*compute.Subnetwork, error) {
 	var res []*compute.Subnetwork
 	for _, subnet := range subnets {
-		_, subnetRange, err := net.ParseCIDR(subnet.IpCidrRange)
+		_, subnetRange, err := netutils.ParseCIDRSloppy(subnet.IpCidrRange)
 		if err != nil {
 			return nil, fmt.Errorf("unable to parse CIDR %q for subnet %q: %v", subnet.IpCidrRange, subnet.Name, err)
 		}
@@ -313,4 +343,73 @@ func typeOfNetwork(network *compute.Network) netType {
 
 func getLocationName(project, zoneOrRegion string) string {
 	return fmt.Sprintf("projects/%s/locations/%s", project, zoneOrRegion)
+}
+
+func addFinalizer(service *v1.Service, kubeClient v1core.CoreV1Interface, key string) error {
+	if hasFinalizer(service, key) {
+		return nil
+	}
+
+	// Make a copy so we don't mutate the shared informer cache.
+	updated := service.DeepCopy()
+	updated.ObjectMeta.Finalizers = append(updated.ObjectMeta.Finalizers, key)
+
+	_, err := servicehelper.PatchService(kubeClient, service, updated)
+	return err
+}
+
+// removeFinalizer patches the service to remove finalizer.
+func removeFinalizer(service *v1.Service, kubeClient v1core.CoreV1Interface, key string) error {
+	if !hasFinalizer(service, key) {
+		return nil
+	}
+
+	// Make a copy so we don't mutate the shared informer cache.
+	updated := service.DeepCopy()
+	updated.ObjectMeta.Finalizers = removeString(updated.ObjectMeta.Finalizers, key)
+
+	_, err := servicehelper.PatchService(kubeClient, service, updated)
+	return err
+}
+
+//hasFinalizer returns if the given service has the specified key in its list of finalizers.
+func hasFinalizer(service *v1.Service, key string) bool {
+	for _, finalizer := range service.ObjectMeta.Finalizers {
+		if finalizer == key {
+			return true
+		}
+	}
+	return false
+}
+
+// removeString returns a newly created []string that contains all items from slice that
+// are not equal to s.
+func removeString(slice []string, s string) []string {
+	var newSlice []string
+	for _, item := range slice {
+		if item != s {
+			newSlice = append(newSlice, item)
+		}
+	}
+	return newSlice
+}
+
+// usesL4RBS checks if service uses Regional Backend Service as a Backend.
+// Such services implemented in other controllers and
+// should not be handled by Service Controller.
+func usesL4RBS(service *v1.Service, forwardingRule *compute.ForwardingRule) bool {
+	// Detect RBS by annotation
+	if val, ok := service.Annotations[RBSAnnotationKey]; ok && val == RBSEnabled {
+		return true
+	}
+	// Detect RBS by finalizer
+	if hasFinalizer(service, NetLBFinalizerV2) {
+		return true
+	}
+	// Detect RBS by existing forwarding rule with Backend Service attached
+	if forwardingRule != nil && forwardingRule.BackendService != "" {
+		return true
+	}
+
+	return false
 }

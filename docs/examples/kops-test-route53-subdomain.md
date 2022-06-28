@@ -42,14 +42,14 @@ We can also check that our domain is reachable from the Internet using "dig". Yo
 ```bash
 dig +short example.org soa
 
-ns-656.awsdns-18.net. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400
+ns-656.<example-aws-dns>-18.net. <example-aws-dns>-hostmaster.amazon.com. 1 7200 900 1209600 86400
 
 dig +short example.org ns
 
-ns-1056.awsdns-04.org.
-ns-656.awsdns-18.net.
-ns-9.awsdns-01.com.
-ns-1642.awsdns-13.co.uk.
+ns-1056.<example-aws-dns>-04.org.
+ns-656.<example-aws-dns>-18.net.
+ns-9.<example-aws-dns>-01.com.
+ns-1642.<example-aws-dns>-13.co.uk.
 ```
 
 If both the "soa" and "ns" queries anwers OK, and with the data pointing to amazon, we are set and we can continue. Please always check that your Route53 hosted DNS zone is working before doing anything else.
@@ -69,10 +69,10 @@ create-hosted-zone \
 jq .DelegationSet.NameServers
 
 [
-  "ns-1383.awsdns-44.org",
-  "ns-829.awsdns-39.net",
-  "ns-346.awsdns-43.com",
-  "ns-1973.awsdns-54.co.uk"
+  "ns-1383.<example-aws-dns>-44.org",
+  "ns-829.<example-aws-dns>-39.net",
+  "ns-346.<example-aws-dns>-43.com",
+  "ns-1973.<example-aws-dns>-54.co.uk"
 ]
 ```
 
@@ -80,10 +80,10 @@ Note that the last command (`aws route53 create-hosted-zone`) will output your n
 
 ```bash
 [
-  "ns-1383.awsdns-44.org",
-  "ns-829.awsdns-39.net",
-  "ns-346.awsdns-43.com",
-  "ns-1973.awsdns-54.co.uk"
+  "ns-1383.<example-aws-dns>-44.org",
+  "ns-829.<example-aws-dns>-39.net",
+  "ns-346.<example-aws-dns>-43.com",
+  "ns-1973.<example-aws-dns>-54.co.uk"
 ]
 ```
 
@@ -121,16 +121,16 @@ cat<<EOF >~/kopsclustertest.example.org.json
         "TTL": 300,
         "ResourceRecords": [
           {
-            "Value": "ns-1383.awsdns-44.org"
+            "Value": "ns-1383.<example-aws-dns>-44.org"
           },
           {
-            "Value": "ns-829.awsdns-39.net"
+            "Value": "ns-829.<example-aws-dns>-39.net"
           },
           {
-            "Value": "ns-346.awsdns-43.com"
+            "Value": "ns-346.<example-aws-dns>-43.com"
           },
           {
-            "Value": "ns-1973.awsdns-54.co.uk"
+            "Value": "ns-1973.<example-aws-dns>-54.co.uk"
           }
         ]
       }
@@ -190,10 +190,10 @@ The last command will output the following info:
 ||+---------------------------------------------------------------------------------+||
 |||                                      Value                                      |||
 ||+---------------------------------------------------------------------------------+||
-|||  ns-1383.awsdns-44.org.                                                         |||
-|||  ns-829.awsdns-39.net.                                                          |||
-|||  ns-346.awsdns-43.com.                                                          |||
-|||  ns-1973.awsdns-54.co.uk.                                                       |||
+|||  ns-1383.<example-aws-dns>-44.org.                                                         |||
+|||  ns-829.<example-aws-dns>-39.net.                                                          |||
+|||  ns-346.<example-aws-dns>-43.com.                                                          |||
+|||  ns-1973.<example-aws-dns>-54.co.uk.                                                       |||
 ||+---------------------------------------------------------------------------------+||
 ||                                ResourceRecordSets                                 ||
 |+-------------------------------------------------------+------------+--------------+|
@@ -205,7 +205,7 @@ The last command will output the following info:
 ||+---------------------------------------------------------------------------------+||
 |||                                      Value                                      |||
 ||+---------------------------------------------------------------------------------+||
-|||  ns-1383.awsdns-44.org. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400  |||
+|||  ns-1383.<example-aws-dns>-44.org. <example-aws-dns>-hostmaster.amazon.com. 1 7200 900 1209600 86400  |||
 ||+---------------------------------------------------------------------------------+||
 ```
 
@@ -214,14 +214,14 @@ Also, do a "dig" test in order to check the zone availability on the Internet:
 ```bash
 dig +short kopsclustertest.example.org soa
 
-ns-1383.awsdns-44.org. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400
+ns-1383.<example-aws-dns>-44.org. <example-aws-dns>-hostmaster.amazon.com. 1 7200 900 1209600 86400
 
 dig +short kopsclustertest.example.org ns
 
-ns-1383.awsdns-44.org.
-ns-829.awsdns-39.net.
-ns-1973.awsdns-54.co.uk.
-ns-346.awsdns-43.com.
+ns-1383.<example-aws-dns>-44.org.
+ns-829.<example-aws-dns>-39.net.
+ns-1973.<example-aws-dns>-54.co.uk.
+ns-346.<example-aws-dns>-43.com.
 ```
 
 If both your SOA and NS records are there, then your subdomain is ready to be used by KOPS.
@@ -279,7 +279,7 @@ ${NAME}
 A few things to note here:
 
 - The environment variable ${NAME} was previously exported with our cluster name: mycluster01.kopsclustertest.example.org.
-- "--cloud=aws": As kops grows and begin to support more clouds, we need to tell the command to use the specific cloud we want for our deployment. In this case: amazon web services (aws).
+- "--cloud=aws": As kOps grows and begin to support more clouds, we need to tell the command to use the specific cloud we want for our deployment. In this case: amazon web services (aws).
 - For true HA at the master level, we need to pick a region with at least 3 availability zones. For this practical exercise, we are using "us-east-1" AWS region which contains 5 availability zones (az's for short): us-east-1a, us-east-1b, us-east-1c, us-east-1d and us-east-1e.
 - The "--master-zones=us-east-1a,us-east-1b,us-east-1c" KOPS argument will actually enforce that we want 3 masters here. "--node-count=2" only applies to the worker nodes (not the masters).
 - We are including the arguments "--node-size" and "master-size" to specify the "instance types" for both our masters and worker nodes.
@@ -312,7 +312,7 @@ I0906 09:42:29.215995   13538 executor.go:91] Tasks: 71 done / 75 total; 4 can r
 I0906 09:42:30.073417   13538 executor.go:91] Tasks: 75 done / 75 total; 0 can run
 I0906 09:42:30.073471   13538 dns.go:152] Pre-creating DNS records
 I0906 09:42:32.403909   13538 update_cluster.go:247] Exporting kubecfg for cluster
-Kops has set your kubectl context to mycluster01.kopsclustertest.example.org
+kOps has set your kubectl context to mycluster01.kopsclustertest.example.org
 
 Cluster is starting.  It should be ready in a few minutes.
 
@@ -411,10 +411,10 @@ The output:
 ||+---------------------------------------------------------------------------------+||
 |||                                      Value                                      |||
 ||+---------------------------------------------------------------------------------+||
-|||  ns-1383.awsdns-44.org.                                                         |||
-|||  ns-829.awsdns-39.net.                                                          |||
-|||  ns-346.awsdns-43.com.                                                          |||
-|||  ns-1973.awsdns-54.co.uk.                                                       |||
+|||  ns-1383.<example-aws-dns>-44.org.                                                         |||
+|||  ns-829.<example-aws-dns>-39.net.                                                          |||
+|||  ns-346.<example-aws-dns>-43.com.                                                          |||
+|||  ns-1973.<example-aws-dns>-54.co.uk.                                                       |||
 ||+---------------------------------------------------------------------------------+||
 ||                                ResourceRecordSets                                 ||
 |+-------------------------------------------------------+------------+--------------+|
@@ -426,7 +426,7 @@ The output:
 ||+---------------------------------------------------------------------------------+||
 |||                                      Value                                      |||
 ||+---------------------------------------------------------------------------------+||
-|||  ns-1383.awsdns-44.org. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400  |||
+|||  ns-1383.<example-aws-dns>-44.org. <example-aws-dns>-hostmaster.amazon.com. 1 7200 900 1209600 86400  |||
 ||+---------------------------------------------------------------------------------+||
 ||                                ResourceRecordSets                                 ||
 |+--------------------------------------------------------------+---------+----------+|
@@ -545,16 +545,16 @@ Output:
   "Type": "NS",
   "ResourceRecords": [
     {
-      "Value": "ns-1383.awsdns-44.org."
+      "Value": "ns-1383.<example-aws-dns>-44.org."
     },
     {
-      "Value": "ns-829.awsdns-39.net."
+      "Value": "ns-829.<example-aws-dns>-39.net."
     },
     {
-      "Value": "ns-346.awsdns-43.com."
+      "Value": "ns-346.<example-aws-dns>-43.com."
     },
     {
-      "Value": "ns-1973.awsdns-54.co.uk."
+      "Value": "ns-1973.<example-aws-dns>-54.co.uk."
     }
   ]
 }
@@ -564,7 +564,7 @@ Output:
   "Type": "SOA",
   "ResourceRecords": [
     {
-      "Value": "ns-1383.awsdns-44.org. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400"
+      "Value": "ns-1383.<example-aws-dns>-44.org. <example-aws-dns>-hostmaster.amazon.com. 1 7200 900 1209600 86400"
     }
   ]
 }
@@ -685,11 +685,10 @@ kops edit ig nodes
 
 An editor (whatever you have on the $EDITOR shell variable) will open with the following text:
 
-```
+```yaml
 apiVersion: kops.k8s.io/v1alpha2
 kind: InstanceGroup
 metadata:
-  creationTimestamp: 2017-09-06T13:40:39Z
   labels:
     kops.k8s.io/cluster: mycluster01.kopsclustertest.example.org
   name: nodes
@@ -707,11 +706,10 @@ spec:
 
 Let's change minSize and maxSize to "3"
 
-```
+```yaml
 apiVersion: kops.k8s.io/v1alpha2
 kind: InstanceGroup
 metadata:
-  creationTimestamp: 2017-09-06T13:40:39Z
   labels:
     kops.k8s.io/cluster: mycluster01.kopsclustertest.example.org
   name: nodes
@@ -787,12 +785,13 @@ Your cluster mycluster01.kopsclustertest.example.org is ready
 You can see how your cluster scaled up to 3 nodes.
 
 **SCALING RECOMMENDATIONS:**
+
 - Always think ahead. If you want to ensure to have the capability to scale-up to all available zones in the region, ensure to add them to the "--zones=" argument when using the "kops create cluster" command. Example: --zones=us-east-1a,us-east-1b,us-east-1c,us-east-1d,us-east-1e. That will make things simpler later.
-- For the masters, always consider "odd" numbers starting from 3. Like many other cluster, odd numbers starting from "3" are the proper way to create a fully redundant multi-master solution. In the specific case of "kops", you add masters by adding zones to the "--master-zones" argument on "kops create command".
+- For the masters, always consider "odd" numbers starting from 3. Like many other cluster, odd numbers starting from "3" are the proper way to create a fully redundant multi-master solution. In the specific case of "kOps", you add masters by adding zones to the "--master-zones" argument on "kops create command".
 
 ## DELETING OUR CLUSTER AND CHECKING OUR DNS SUBDOMAIN:
 
-If we don't need our cluster anymore, let's use a kops command in order to delete it:
+If we don't need our cluster anymore, let's use a kOps command in order to delete it:
 
 ```bash
 kops delete cluster ${NAME} --yes
@@ -830,10 +829,10 @@ The output:
 ||+---------------------------------------------------------------------------------+||
 |||                                      Value                                      |||
 ||+---------------------------------------------------------------------------------+||
-|||  ns-1383.awsdns-44.org.                                                         |||
-|||  ns-829.awsdns-39.net.                                                          |||
-|||  ns-346.awsdns-43.com.                                                          |||
-|||  ns-1973.awsdns-54.co.uk.                                                       |||
+|||  ns-1383.<example-aws-dns>-44.org.                                                         |||
+|||  ns-829.<example-aws-dns>-39.net.                                                          |||
+|||  ns-346.<example-aws-dns>-43.com.                                                          |||
+|||  ns-1973.<example-aws-dns>-54.co.uk.                                                       |||
 ||+---------------------------------------------------------------------------------+||
 ||                                ResourceRecordSets                                 ||
 |+-------------------------------------------------------+------------+--------------+|
@@ -845,7 +844,7 @@ The output:
 ||+---------------------------------------------------------------------------------+||
 |||                                      Value                                      |||
 ||+---------------------------------------------------------------------------------+||
-|||  ns-1383.awsdns-44.org. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400  |||
+|||  ns-1383.<example-aws-dns>-44.org. <example-aws-dns>-hostmaster.amazon.com. 1 7200 900 1209600 86400  |||
 ||+---------------------------------------------------------------------------------+||
 ```
 

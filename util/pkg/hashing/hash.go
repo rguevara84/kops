@@ -28,7 +28,7 @@ import (
 	"os"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/kops/pkg/try"
 )
@@ -71,7 +71,7 @@ func (ha HashAlgorithm) NewHasher() hash.Hash {
 }
 
 func (ha HashAlgorithm) FromString(s string) (*Hash, error) {
-	l := -1
+	var l int
 	switch ha {
 	case HashAlgorithmMD5:
 		l = 32
@@ -92,6 +92,14 @@ func (ha HashAlgorithm) FromString(s string) (*Hash, error) {
 		return nil, fmt.Errorf("invalid hash %q - not hex", s)
 	}
 	return &Hash{Algorithm: ha, HashValue: hashValue}, nil
+}
+
+func MustFromString(s string) *Hash {
+	h, err := FromString(s)
+	if err != nil {
+		klog.Fatalf("FromString(%q) failed with %v", s, err)
+	}
+	return h
 }
 
 func FromString(s string) (*Hash, error) {
@@ -136,30 +144,6 @@ func (ha HashAlgorithm) HashFile(p string) (*Hash, error) {
 	}
 	defer try.CloseFile(f)
 	return ha.Hash(f)
-}
-
-func HashesForResource(r io.Reader, hashAlgorithms []HashAlgorithm) ([]*Hash, error) {
-	var hashers []hash.Hash
-	var writers []io.Writer
-	for _, hashAlgorithm := range hashAlgorithms {
-		hasher := hashAlgorithm.NewHasher()
-		hashers = append(hashers, hasher)
-		writers = append(writers, hasher)
-	}
-
-	w := io.MultiWriter(writers...)
-
-	_, err := copyToHasher(w, r)
-	if err != nil {
-		return nil, fmt.Errorf("error while hashing resource: %v", err)
-	}
-
-	var hashes []*Hash
-	for i, hasher := range hashers {
-		hashes = append(hashes, &Hash{Algorithm: hashAlgorithms[i], HashValue: hasher.Sum(nil)})
-	}
-
-	return hashes, nil
 }
 
 func copyToHasher(dest io.Writer, src io.Reader) (int64, error) {

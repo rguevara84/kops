@@ -227,7 +227,7 @@ type LoadBalancer struct {
 	Type        *string `json:"type,omitempty"`
 	BalancerID  *string `json:"balancerId,omitempty"`
 	TargetSetID *string `json:"targetSetId,omitempty"`
-	AutoWeight  *bool   `json:"autoWeight"`
+	AutoWeight  *bool   `json:"autoWeight,omitempty"`
 
 	forceSendFields []string
 	nullFields      []string
@@ -766,7 +766,7 @@ func (s *ServiceOp) List(ctx context.Context, input *ListGroupsInput) (*ListGrou
 }
 
 func (s *ServiceOp) Create(ctx context.Context, input *CreateGroupInput) (*CreateGroupOutput, error) {
-	r := client.NewRequest(http.MethodPost, "/compute/azure/group")
+	r := client.NewRequest(http.MethodPost, "/azure/compute/group")
 	r.Obj = input
 
 	resp, err := client.RequireOK(s.Client.Do(ctx, r))

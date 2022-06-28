@@ -17,12 +17,15 @@ limitations under the License.
 package cloudup
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
+	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/upup/pkg/fi/cloudup/azure"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/util/pkg/vfs"
 
@@ -38,11 +41,8 @@ import (
 // any time Run() is called in apply_cluster.go we will reach this function.
 // Please do all after-market logic here.
 //
-func PerformAssignments(c *kops.Cluster) error {
-	cloud, err := BuildCloud(c)
-	if err != nil {
-		return err
-	}
+func PerformAssignments(c *kops.Cluster, cloud fi.Cloud) error {
+	ctx := context.TODO()
 
 	// Topology support
 	// TODO Kris: Unsure if this needs to be here, or if the API conversion code will handle it
@@ -50,33 +50,46 @@ func PerformAssignments(c *kops.Cluster) error {
 		c.Spec.Topology = &kops.TopologySpec{Masters: kops.TopologyPublic, Nodes: kops.TopologyPublic}
 	}
 
+	if cloud == nil {
+		return fmt.Errorf("cloud cannot be nil")
+	}
+
 	if cloud.ProviderID() == kops.CloudProviderGCE {
-		if err := gce.PerformNetworkAssignments(c, cloud); err != nil {
+		if err := gce.PerformNetworkAssignments(ctx, c, cloud); err != nil {
 			return err
 		}
 	}
 
-	// Currently only AWS uses NetworkCIDRs
-	setNetworkCIDR := (cloud.ProviderID() == kops.CloudProviderAWS) || (cloud.ProviderID() == kops.CloudProviderALI)
+	setNetworkCIDR := (cloud.ProviderID() == kops.CloudProviderAWS) || (cloud.ProviderID() == kops.CloudProviderAzure)
 	if setNetworkCIDR && c.Spec.NetworkCIDR == "" {
 		if c.SharedVPC() {
-			vpcInfo, err := cloud.FindVPCInfo(c.Spec.NetworkID)
-			if err != nil {
-				return err
+			var vpcInfo *fi.VPCInfo
+			var err error
+			if cloud.ProviderID() == kops.CloudProviderAzure {
+				if c.Spec.CloudProvider.Azure == nil || c.Spec.CloudProvider.Azure.ResourceGroupName == "" {
+					return fmt.Errorf("missing required --azure-resource-group-name when specifying Network ID")
+				}
+				vpcInfo, err = cloud.(azure.AzureCloud).FindVNetInfo(c.Spec.NetworkID, c.Spec.CloudProvider.Azure.ResourceGroupName)
+				if err != nil {
+					return err
+				}
+			} else {
+				vpcInfo, err = cloud.FindVPCInfo(c.Spec.NetworkID)
+				if err != nil {
+					return err
+				}
 			}
 			if vpcInfo == nil {
-				return fmt.Errorf("unable to find VPC ID %q", c.Spec.NetworkID)
+				return fmt.Errorf("unable to find Network ID %q", c.Spec.NetworkID)
 			}
 			c.Spec.NetworkCIDR = vpcInfo.CIDR
 			if c.Spec.NetworkCIDR == "" {
-				return fmt.Errorf("Unable to infer NetworkCIDR from VPC ID, please specify --network-cidr")
+				return fmt.Errorf("unable to infer NetworkCIDR from Network ID, please specify --network-cidr")
 			}
 		} else {
 			if cloud.ProviderID() == kops.CloudProviderAWS {
 				// TODO: Choose non-overlapping networking CIDRs for VPCs, using vpcInfo
 				c.Spec.NetworkCIDR = "172.20.0.0/16"
-			} else if cloud.ProviderID() == kops.CloudProviderALI {
-				c.Spec.NetworkCIDR = "192.168.0.0/16"
 			}
 		}
 
@@ -99,20 +112,21 @@ func PerformAssignments(c *kops.Cluster) error {
 		c.Spec.MasterPublicName = "api." + c.ObjectMeta.Name
 	}
 
-	// We only assign subnet CIDRs on AWS
+	// We only assign subnet CIDRs on AWS, OpenStack, and Azure.
 	pd := cloud.ProviderID()
-	if pd == kops.CloudProviderAWS || pd == kops.CloudProviderOpenstack || pd == kops.CloudProviderALI {
+	if pd == kops.CloudProviderAWS || pd == kops.CloudProviderOpenstack || pd == kops.CloudProviderAzure {
 		// TODO: Use vpcInfo
-		err = assignCIDRsToSubnets(c)
+		err := assignCIDRsToSubnets(c, cloud)
 		if err != nil {
 			return err
 		}
 	}
 
-	c.Spec.EgressProxy, err = assignProxy(c)
+	proxy, err := assignProxy(c)
 	if err != nil {
 		return err
 	}
+	c.Spec.EgressProxy = proxy
 
 	return ensureKubernetesVersion(c)
 }
@@ -164,7 +178,6 @@ func FindLatestKubernetesVersion() (string, error) {
 }
 
 func assignProxy(cluster *kops.Cluster) (*kops.EgressProxySpec, error) {
-
 	egressProxy := cluster.Spec.EgressProxy
 	// Add default no_proxy values if we are using a http proxy
 	if egressProxy != nil {
@@ -204,7 +217,7 @@ func assignProxy(cluster *kops.Cluster) (*kops.EgressProxySpec, error) {
 
 		awsNoProxy := "169.254.169.254"
 
-		if cluster.Spec.CloudProvider == "aws" && !strings.Contains(cluster.Spec.EgressProxy.ProxyExcludes, awsNoProxy) {
+		if cluster.Spec.GetCloudProvider() == kops.CloudProviderAWS && !strings.Contains(cluster.Spec.EgressProxy.ProxyExcludes, awsNoProxy) {
 			egressSlice = append(egressSlice, awsNoProxy)
 		}
 

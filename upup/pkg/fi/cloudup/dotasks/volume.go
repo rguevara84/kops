@@ -22,18 +22,17 @@ import (
 
 	"github.com/digitalocean/godo"
 
-	"k8s.io/klog"
-	"k8s.io/kops/pkg/resources/digitalocean"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
-//go:generate fitask -type=Volume
+// +kops:fitask
 type Volume struct {
 	Name      *string
 	ID        *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	SizeGB *int64
 	Region *string
@@ -47,11 +46,11 @@ func (v *Volume) CompareWithID() *string {
 }
 
 func (v *Volume) Find(c *fi.Context) (*Volume, error) {
-	cloud := c.Cloud.(*digitalocean.Cloud)
-	volService := cloud.Volumes()
+	cloud := c.Cloud.(do.DOCloud)
+	volService := cloud.VolumeService()
 
 	volumes, _, err := volService.ListVolumes(context.TODO(), &godo.ListVolumeParams{
-		Region: cloud.Region,
+		Region: cloud.Region(),
 		Name:   fi.StringValue(v.Name),
 	})
 	if err != nil {
@@ -119,7 +118,7 @@ func (_ *Volume) RenderDO(t *do.DOAPITarget, a, e, changes *Volume) error {
 		tagArray = append(tagArray, fmt.Sprintf("%s:%s", k, v))
 	}
 
-	volService := t.Cloud.Volumes()
+	volService := t.Cloud.VolumeService()
 	_, _, err := volService.CreateVolume(context.TODO(), &godo.VolumeCreateRequest{
 		Name:          fi.StringValue(e.Name),
 		Region:        fi.StringValue(e.Region),
@@ -133,9 +132,9 @@ func (_ *Volume) RenderDO(t *do.DOAPITarget, a, e, changes *Volume) error {
 // terraformVolume represents the digitalocean_volume resource in terraform
 // https://www.terraform.io/docs/providers/do/r/volume.html
 type terraformVolume struct {
-	Name   *string `json:"name"`
-	SizeGB *int64  `json:"size"`
-	Region *string `json:"region"`
+	Name   *string `cty:"name"`
+	SizeGB *int64  `cty:"size"`
+	Region *string `cty:"region"`
 }
 
 func (_ *Volume) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Volume) error {

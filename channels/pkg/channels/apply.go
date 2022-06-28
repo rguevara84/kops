@@ -18,26 +18,19 @@ package channels
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
 	"strings"
 
-	"k8s.io/klog"
-	"k8s.io/kops/util/pkg/vfs"
+	"k8s.io/klog/v2"
 )
 
 // Apply calls kubectl apply to apply the manifest.
 // We will likely in future change this to create things directly (or more likely embed this logic into kubectl itself)
-func Apply(manifest string) error {
+func Apply(data []byte) error {
 	// We copy the manifest to a temp file because it is likely e.g. an s3 URL, which kubectl can't read
-	data, err := vfs.Context.ReadFile(manifest)
-	if err != nil {
-		return fmt.Errorf("error reading manifest: %v", err)
-	}
-
-	tmpDir, err := ioutil.TempDir("", "channel")
+	tmpDir, err := os.MkdirTemp("", "channel")
 	if err != nil {
 		return fmt.Errorf("error creating temp dir: %v", err)
 	}
@@ -49,12 +42,31 @@ func Apply(manifest string) error {
 	}()
 
 	localManifestFile := path.Join(tmpDir, "manifest.yaml")
-	if err := ioutil.WriteFile(localManifestFile, data, 0600); err != nil {
+	if err := os.WriteFile(localManifestFile, data, 0o600); err != nil {
 		return fmt.Errorf("error writing temp file: %v", err)
 	}
+	{
+		_, err := execKubectl("apply", "-f", localManifestFile, "--server-side", "--force-conflicts", "--field-manager=kops")
+		if err != nil {
+			klog.Errorf("failed to apply the manifest: %v", err)
+		}
+	}
+	{
+		_, err := execKubectl("replace", "-f", localManifestFile, "--field-manager=kops")
+		if err != nil {
+			return fmt.Errorf("failed to replace manifest: %w", err)
+		}
+	}
 
-	_, err = execKubectl("apply", "-f", localManifestFile)
-	return err
+	// Remove this one. Just to show that apply works properly after replace
+	{
+		_, err := execKubectl("apply", "-f", localManifestFile, "--server-side", "--force-conflicts", "--field-manager=kops")
+		if err != nil {
+			return fmt.Errorf("failed to apply the manifest: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func execKubectl(args ...string) (string, error) {
@@ -69,7 +81,7 @@ func execKubectl(args ...string) (string, error) {
 	if err != nil {
 		klog.Infof("error running %s", human)
 		klog.Info(string(output))
-		return string(output), fmt.Errorf("error running kubectl")
+		return string(output), fmt.Errorf("error running kubectl: %v", err)
 	}
 
 	return string(output), err

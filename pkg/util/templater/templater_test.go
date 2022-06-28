@@ -17,12 +17,13 @@ limitations under the License.
 package templater
 
 import (
-	"io/ioutil"
+	"os"
 	"testing"
 
 	"k8s.io/kops/pkg/diff"
+	"k8s.io/kops/tests/integration/channel/simple"
 
-	yaml "gopkg.in/yaml.v2"
+	"sigs.k8s.io/yaml"
 )
 
 func TestRenderGeneralOK(t *testing.T) {
@@ -76,6 +77,32 @@ func TestRenderIndent(t *testing.T) {
 			Context:  map[string]interface{}{"line": "this is a line of\ntext"},
 			Template: `{{ .line | indent 2 }}`,
 			Expected: "this is a line of\n  text",
+		},
+	}
+	makeRenderTests(t, cases)
+}
+
+func TestRenderChannelFunctions(t *testing.T) {
+	cases := []renderTest{
+		{
+			Context:  map[string]interface{}{},
+			Template: `{{ ChannelRecommendedKopsKubernetesVersion }}`,
+			Expected: "1.5.2",
+		},
+		{
+			Context:  map[string]interface{}{},
+			Template: `{{ ChannelRecommendedKubernetesUpgradeVersion "1.4.2" }}`,
+			Expected: "1.4.8",
+		},
+		{
+			Context:  map[string]interface{}{},
+			Template: `{{ ChannelRecommendedImage "aws" "1.19.2" "amd64" }}`,
+			Expected: "099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210315",
+		},
+		{
+			Context:  map[string]interface{}{},
+			Template: `{{ ChannelRecommendedImage "aws" "1.19.2" "arm64" }}`,
+			Expected: "099720109477/ubuntu/images/hvm-ssd/ubuntu-focal-20.04-arm64-server-20210315",
 		},
 	}
 	makeRenderTests(t, cases)
@@ -161,7 +188,7 @@ func TestAllowForMissingVars(t *testing.T) {
 
 func TestRenderIntegration(t *testing.T) {
 	var cases []renderTest
-	content, err := ioutil.ReadFile("integration_tests.yml")
+	content, err := os.ReadFile("integration_tests.yml")
 	if err != nil {
 		t.Fatalf("unable to load the integration tests, error: %s", err)
 	}
@@ -182,7 +209,14 @@ type renderTest struct {
 }
 
 func makeRenderTests(t *testing.T, tests []renderTest) {
-	r := NewTemplater()
+	sourcePath := "../../../tests/integration/channel/simple/channel.yaml"
+	s, _ := os.Getwd()
+
+	channel, err := simple.NewMockChannel(sourcePath)
+	if err != nil {
+		t.Fatalf("could not load channel: %v, %s", err, s)
+	}
+	r := NewTemplater(channel)
 	for i, x := range tests {
 		render, err := r.Render(x.Template, x.Context, x.Snippets, !x.DisableMissing)
 		if x.NotOK {

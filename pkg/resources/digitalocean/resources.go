@@ -20,33 +20,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitalocean/godo"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dns-controller/pkg/dns"
+	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/resources"
 	"k8s.io/kops/upup/pkg/fi"
+	"k8s.io/kops/upup/pkg/fi/cloudup/do"
 )
 
 const (
-	resourceTypeDroplet   = "droplet"
-	resourceTypeVolume    = "volume"
-	resourceTypeDNSRecord = "dns-record"
+	resourceTypeDroplet      = "droplet"
+	resourceTypeVolume       = "volume"
+	resourceTypeDNSRecord    = "dns-record"
+	resourceTypeLoadBalancer = "loadbalancer"
+	resourceTypeVPC          = "vpc"
 )
 
 type listFn func(fi.Cloud, string) ([]*resources.Resource, error)
 
-func ListResources(cloud *Cloud, clusterName string) (map[string]*resources.Resource, error) {
+func ListResources(cloud do.DOCloud, clusterName string) (map[string]*resources.Resource, error) {
 	resourceTrackers := make(map[string]*resources.Resource)
 
 	listFunctions := []listFn{
 		listVolumes,
 		listDroplets,
 		listDNS,
+		listLoadBalancers,
+		listVPCs,
 	}
 
 	for _, fn := range listFunctions {
@@ -63,12 +70,12 @@ func ListResources(cloud *Cloud, clusterName string) (map[string]*resources.Reso
 }
 
 func listDroplets(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) {
-	c := cloud.(*Cloud)
+	c := cloud.(do.DOCloud)
 	var resourceTrackers []*resources.Resource
 
 	clusterTag := "KubernetesCluster:" + strings.Replace(clusterName, ".", "-", -1)
 
-	droplets, err := getAllDropletsByTag(c, clusterTag)
+	droplets, err := c.GetAllDropletsByTag(clusterTag)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list droplets: %v", err)
 	}
@@ -79,6 +86,7 @@ func listDroplets(cloud fi.Cloud, clusterName string) ([]*resources.Resource, er
 			ID:      strconv.Itoa(droplet.ID),
 			Type:    resourceTypeDroplet,
 			Deleter: deleteDroplet,
+			Dumper:  dumpDroplet,
 			Obj:     droplet,
 		}
 
@@ -88,40 +96,13 @@ func listDroplets(cloud fi.Cloud, clusterName string) ([]*resources.Resource, er
 	return resourceTrackers, nil
 }
 
-func getAllDropletsByTag(cloud *Cloud, tag string) ([]godo.Droplet, error) {
-	allDroplets := []godo.Droplet{}
-
-	opt := &godo.ListOptions{}
-	for {
-		droplets, resp, err := cloud.Droplets().ListByTag(context.TODO(), tag, opt)
-		if err != nil {
-			return nil, err
-		}
-
-		allDroplets = append(allDroplets, droplets...)
-
-		if resp.Links == nil || resp.Links.IsLastPage() {
-			break
-		}
-
-		page, err := resp.Links.CurrentPage()
-		if err != nil {
-			return nil, err
-		}
-
-		opt.Page = page + 1
-	}
-
-	return allDroplets, nil
-}
-
 func listVolumes(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) {
-	c := cloud.(*Cloud)
+	c := cloud.(do.DOCloud)
 	var resourceTrackers []*resources.Resource
 
 	volumeMatch := strings.Replace(clusterName, ".", "-", -1)
 
-	volumes, err := getAllVolumesByRegion(c, c.Region)
+	volumes, err := c.GetAllVolumesByRegion()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list volumes: %s", err)
 	}
@@ -149,41 +130,9 @@ func listVolumes(cloud fi.Cloud, clusterName string) ([]*resources.Resource, err
 	return resourceTrackers, nil
 }
 
-func getAllVolumesByRegion(cloud *Cloud, region string) ([]godo.Volume, error) {
-	allVolumes := []godo.Volume{}
-
-	opt := &godo.ListOptions{}
-	for {
-		volumes, resp, err := cloud.Volumes().ListVolumes(context.TODO(), &godo.ListVolumeParams{
-			Region:      region,
-			ListOptions: opt,
-		})
-
-		if err != nil {
-			return nil, err
-		}
-
-		allVolumes = append(allVolumes, volumes...)
-
-		if resp.Links == nil || resp.Links.IsLastPage() {
-			break
-		}
-
-		page, err := resp.Links.CurrentPage()
-		if err != nil {
-			return nil, err
-		}
-
-		opt.Page = page + 1
-	}
-
-	return allVolumes, nil
-}
-
 func listDNS(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) {
-	c := cloud.(*Cloud)
-
-	domains, _, err := c.Client.Domains.List(context.TODO(), &godo.ListOptions{})
+	c := cloud.(do.DOCloud)
+	domains, _, err := c.DomainService().List(context.TODO(), &godo.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list domains: %s", err)
 	}
@@ -238,12 +187,12 @@ func listDNS(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) 
 	return resourceTrackers, nil
 }
 
-func getAllRecordsByDomain(cloud *Cloud, domain string) ([]godo.DomainRecord, error) {
+func getAllRecordsByDomain(cloud do.DOCloud, domain string) ([]godo.DomainRecord, error) {
 	allRecords := []godo.DomainRecord{}
 
 	opt := &godo.ListOptions{}
 	for {
-		records, resp, err := cloud.Client.Domains.Records(context.TODO(), domain, opt)
+		records, resp, err := cloud.DomainService().Records(context.TODO(), domain, opt)
 		if err != nil {
 			return nil, err
 		}
@@ -265,15 +214,48 @@ func getAllRecordsByDomain(cloud *Cloud, domain string) ([]godo.DomainRecord, er
 	return allRecords, nil
 }
 
-func deleteDroplet(cloud fi.Cloud, t *resources.Resource) error {
-	c := cloud.(*Cloud)
+func listLoadBalancers(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) {
+	c := cloud.(do.DOCloud)
+	var resourceTrackers []*resources.Resource
 
+	clusterTag := "KubernetesCluster-Master:" + strings.Replace(clusterName, ".", "-", -1)
+
+	lbs, err := c.GetAllLoadBalancers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list lbs: %v", err)
+	}
+
+	for _, lb := range lbs {
+		if strings.Contains(lb.Tag, clusterTag) {
+			resourceTracker := &resources.Resource{
+				Name:    lb.Name,
+				ID:      lb.ID,
+				Type:    resourceTypeLoadBalancer,
+				Deleter: deleteLoadBalancer,
+				Obj:     lb,
+			}
+
+			var blocks []string
+			for _, dropletID := range lb.DropletIDs {
+				blocks = append(blocks, "droplet:"+strconv.Itoa(dropletID))
+			}
+
+			resourceTracker.Blocks = blocks
+			resourceTrackers = append(resourceTrackers, resourceTracker)
+		}
+	}
+
+	return resourceTrackers, nil
+}
+
+func deleteDroplet(cloud fi.Cloud, t *resources.Resource) error {
+	c := cloud.(do.DOCloud)
 	dropletID, err := strconv.Atoi(t.ID)
 	if err != nil {
 		return fmt.Errorf("failed to convert droplet ID to int: %s", err)
 	}
 
-	_, err = c.Droplets().Delete(context.TODO(), dropletID)
+	_, err = c.DropletsService().Delete(context.TODO(), dropletID)
 	if err != nil {
 		return fmt.Errorf("failed to delete droplet: %d, err: %s", dropletID, err)
 	}
@@ -281,21 +263,35 @@ func deleteDroplet(cloud fi.Cloud, t *resources.Resource) error {
 	return nil
 }
 
-func deleteVolume(cloud fi.Cloud, t *resources.Resource) error {
-	c := cloud.(*Cloud)
+func deleteVPC(cloud fi.Cloud, t *resources.Resource) error {
+	c := cloud.(do.DOCloud)
+	_, err := c.VPCsService().Delete(context.TODO(), t.ID)
+	if err != nil {
+		return fmt.Errorf("failed to delete VPC %s (ID %s): %s", t.Name, t.ID, err)
+	}
 
+	return nil
+}
+
+func deleteVolume(cloud fi.Cloud, t *resources.Resource) error {
+	c := cloud.(do.DOCloud)
 	volume := t.Obj.(godo.Volume)
 	for _, dropletID := range volume.DropletIDs {
-		action, _, err := c.VolumeActions().DetachByDropletID(context.TODO(), volume.ID, dropletID)
+		action, resp, err := c.VolumeActionService().DetachByDropletID(context.TODO(), volume.ID, dropletID)
 		if err != nil {
-			return fmt.Errorf("failed to detach volume: %s, err: %s", volume.ID, err)
+			if resp != nil && resp.StatusCode == http.StatusNotFound {
+				// Volume is already detached, nothing to do.
+				continue
+			}
+			return fmt.Errorf("failed to detach volume %s: %s", volume.ID, err)
 		}
+
 		if err := waitForDetach(c, action); err != nil {
 			return fmt.Errorf("error while waiting for volume %s to detach: %s", volume.ID, err)
 		}
 	}
 
-	_, err := c.Volumes().DeleteVolume(context.TODO(), t.ID)
+	_, err := c.VolumeService().DeleteVolume(context.TODO(), t.ID)
 	if err != nil {
 		return fmt.Errorf("failed to delete volume: %s, err: %s", t.ID, err)
 	}
@@ -304,10 +300,10 @@ func deleteVolume(cloud fi.Cloud, t *resources.Resource) error {
 }
 
 func deleteRecord(cloud fi.Cloud, domain string, t *resources.Resource) error {
-	c := cloud.(*Cloud)
+	c := cloud.(do.DOCloud)
 	record := t.Obj.(godo.DomainRecord)
 
-	_, err := c.Client.Domains.DeleteRecord(context.TODO(), domain, record.ID)
+	_, err := c.DomainService().DeleteRecord(context.TODO(), domain, record.ID)
 	if err != nil {
 		return fmt.Errorf("failed to delete record for domain %s: %d", domain, record.ID)
 	}
@@ -315,15 +311,27 @@ func deleteRecord(cloud fi.Cloud, domain string, t *resources.Resource) error {
 	return nil
 }
 
-func waitForDetach(cloud *Cloud, action *godo.Action) error {
+func deleteLoadBalancer(cloud fi.Cloud, t *resources.Resource) error {
+	c := cloud.(do.DOCloud)
+	lb := t.Obj.(godo.LoadBalancer)
+	_, err := c.LoadBalancersService().Delete(context.TODO(), lb.ID)
+	if err != nil {
+		return fmt.Errorf("failed to delete load balancer with name %s %v", lb.Name, err)
+	}
+
+	return nil
+}
+
+func waitForDetach(cloud do.DOCloud, action *godo.Action) error {
 	timeout := time.After(10 * time.Second)
-	tick := time.Tick(500 * time.Millisecond)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-timeout:
 			return errors.New("timed out waiting for volume to detach")
-		case <-tick:
-			updatedAction, _, err := cloud.Client.Actions.Get(context.TODO(), action.ID)
+		case <-ticker.C:
+			updatedAction, _, err := cloud.ActionsService().Get(context.TODO(), action.ID)
 			if err != nil {
 				return err
 			}
@@ -333,4 +341,73 @@ func waitForDetach(cloud *Cloud, action *godo.Action) error {
 			}
 		}
 	}
+}
+
+func dumpDroplet(op *resources.DumpOperation, r *resources.Resource) error {
+	data := make(map[string]interface{})
+	data["id"] = r.ID
+	data["type"] = godo.DropletResourceType
+	data["raw"] = r.Obj
+	op.Dump.Resources = append(op.Dump.Resources, data)
+
+	droplet := r.Obj.(godo.Droplet)
+	i := &resources.Instance{
+		Name: r.ID,
+	}
+	if ip, err := droplet.PublicIPv4(); err == nil {
+		i.PublicAddresses = append(i.PublicAddresses, ip)
+	}
+	if ip, err := droplet.PublicIPv6(); err == nil {
+		i.PublicAddresses = append(i.PublicAddresses, ip)
+	}
+	if img := droplet.Image; img != nil {
+		switch img.Distribution {
+		case "Ubuntu":
+			i.SSHUser = "root"
+		default:
+			klog.Warningf("unrecognized droplet image distribution: %v", img.Distribution)
+		}
+	}
+	for _, tag := range droplet.Tags {
+		if strings.HasPrefix(tag, "KubernetesCluster-Master") {
+			i.Roles = []string{string(kops.InstanceGroupRoleMaster)}
+			break
+		}
+	}
+	if len(i.Roles) == 0 {
+		i.Roles = []string{string(kops.InstanceGroupRoleNode)}
+	}
+
+	op.Dump.Instances = append(op.Dump.Instances, i)
+
+	return nil
+}
+
+func listVPCs(cloud fi.Cloud, clusterName string) ([]*resources.Resource, error) {
+	c := cloud.(do.DOCloud)
+	var resourceTrackers []*resources.Resource
+
+	clusterName = do.SafeClusterName(clusterName)
+	vpcName := "vpc-" + clusterName
+
+	vpcs, err := c.GetAllVPCs()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list vpcs: %v", err)
+	}
+
+	for _, vpc := range vpcs {
+		if vpc.Name == vpcName {
+			resourceTracker := &resources.Resource{
+				Name:    vpc.Name,
+				ID:      vpc.ID,
+				Type:    resourceTypeVPC,
+				Deleter: deleteVPC,
+				Obj:     vpc,
+			}
+
+			resourceTrackers = append(resourceTrackers, resourceTracker)
+		}
+	}
+
+	return resourceTrackers, nil
 }

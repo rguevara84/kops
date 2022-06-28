@@ -17,10 +17,11 @@ limitations under the License.
 package model
 
 import (
-	"k8s.io/klog"
-	"k8s.io/kops/nodeup/pkg/distros"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/distributions"
 )
 
 // NTPBuilder installs and starts NTP, to ensure accurate clock times.
@@ -34,25 +35,92 @@ var _ fi.ModelBuilder = &NTPBuilder{}
 
 // Build is responsible for configuring NTP
 func (b *NTPBuilder) Build(c *fi.ModelBuilderContext) error {
-	switch b.Distribution {
-	case distros.DistributionContainerOS:
-		klog.Infof("Detected ContainerOS; won't install ntp")
-		return nil
-	case distros.DistributionCoreOS:
-		klog.Infof("Detected CoreOS; won't install ntp")
+	if !b.managed() {
+		klog.Infof("Managed is set to false; won't install NTP")
 		return nil
 	}
 
-	if b.Distribution.IsDebianFamily() {
-		c.AddTask(&nodetasks.Package{Name: "ntp"})
-		c.AddTask((&nodetasks.Service{Name: "ntp"}).InitDefaults())
+	switch b.Distribution {
+	case distributions.DistributionContainerOS:
+		klog.Infof("Detected ContainerOS; won't install ntp")
+		return nil
+	case distributions.DistributionFlatcar:
+		klog.Infof("Detected Flatcar; won't install ntp")
+		return nil
+	}
+
+	var ntpHost string
+	switch b.CloudProvider {
+	case kops.CloudProviderAWS:
+		ntpHost = "169.254.169.123"
+	case kops.CloudProviderGCE:
+		ntpHost = "time.google.com"
+	default:
+		ntpHost = ""
+	}
+
+	if !b.RunningOnGCE() && b.Distribution.IsUbuntu() && b.Distribution.Version() <= 20.04 {
+		if ntpHost != "" {
+			c.AddTask(b.buildTimesyncdConf("/etc/systemd/timesyncd.conf", ntpHost))
+		}
+		c.AddTask((&nodetasks.Service{Name: "systemd-timesyncd"}).InitDefaults())
+	} else if b.Distribution.IsDebianFamily() {
+		c.AddTask(&nodetasks.Package{Name: "chrony"})
+		if ntpHost != "" {
+			c.AddTask(b.buildChronydConf("/etc/chrony/chrony.conf", ntpHost))
+		}
+		c.AddTask((&nodetasks.Service{Name: "chrony"}).InitDefaults())
 	} else if b.Distribution.IsRHELFamily() {
-		c.AddTask(&nodetasks.Package{Name: "ntp"})
-		c.AddTask((&nodetasks.Service{Name: "ntpd"}).InitDefaults())
+		c.AddTask(&nodetasks.Package{Name: "chrony"})
+		if ntpHost != "" {
+			c.AddTask(b.buildChronydConf("/etc/chrony.conf", ntpHost))
+		}
+		c.AddTask((&nodetasks.Service{Name: "chronyd"}).InitDefaults())
 	} else {
 		klog.Warningf("unknown distribution, skipping ntp install: %v", b.Distribution)
 		return nil
 	}
 
 	return nil
+}
+
+func (b *NTPBuilder) buildChronydConf(path string, host string) *nodetasks.File {
+	conf := `# Built by kOps - do NOT edit
+
+pool ` + host + ` prefer iburst
+driftfile /var/lib/chrony/drift
+leapsectz right/UTC
+logdir /var/log/chrony
+makestep 1.0 3
+maxupdateskew 100.0
+rtcsync
+`
+	return &nodetasks.File{
+		Path:     path,
+		Contents: fi.NewStringResource(conf),
+		Type:     nodetasks.FileType_File,
+		Mode:     s("0644"),
+	}
+}
+
+func (b *NTPBuilder) buildTimesyncdConf(path string, host string) *nodetasks.File {
+	conf := `# Built by Kops - do NOT edit
+
+[Time]
+NTP=` + host + `
+`
+	return &nodetasks.File{
+		Path:     path,
+		Contents: fi.NewStringResource(conf),
+		Type:     nodetasks.FileType_File,
+		Mode:     s("0644"),
+	}
+}
+
+// managed determines if kops should manage the installation and configuration of NTP.
+func (b *NTPBuilder) managed() bool {
+	n := b.Cluster.Spec.NTP
+	// Consider the NTP is managed when the NTP configuration
+	// is not specified (for backward compatibility).
+	return n == nil || n.Managed == nil || *n.Managed
 }

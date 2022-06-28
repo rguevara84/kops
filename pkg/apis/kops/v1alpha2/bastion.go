@@ -17,7 +17,14 @@ limitations under the License.
 package v1alpha2
 
 type BastionSpec struct {
-	BastionPublicName string `json:"bastionPublicName,omitempty"`
+	PublicName string `json:"bastionPublicName,omitempty"`
 	// IdleTimeoutSeconds is the bastion's Loadbalancer idle timeout
-	IdleTimeoutSeconds *int64 `json:"idleTimeoutSeconds,omitempty"`
+	IdleTimeoutSeconds *int64                   `json:"idleTimeoutSeconds,omitempty"`
+	LoadBalancer       *BastionLoadBalancerSpec `json:"loadBalancer,omitempty"`
+}
+
+type BastionLoadBalancerSpec struct {
+	AdditionalSecurityGroups []string `json:"additionalSecurityGroups,omitempty"`
+	// Type of load balancer to create, it can be Public or Internal.
+	Type LoadBalancerType `json:"type,omitempty"`
 }

@@ -24,7 +24,7 @@ import (
 	"time"
 
 	"github.com/weaveworks/mesh"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/protokube/pkg/gossip"
 )
 
@@ -40,11 +40,10 @@ type MeshGossiper struct {
 	router *mesh.Router
 	peer   *peer
 
-	version uint64
+	// version uint64
 }
 
 func NewMeshGossiper(listen string, channelName string, nodeName string, password []byte, seeds gossip.SeedProvider) (*MeshGossiper, error) {
-
 	connLimit := 0 // 0 means no limit
 	gossipDnsConnLimit := os.Getenv("GOSSIP_DNS_CONN_LIMIT")
 	if gossipDnsConnLimit != "" {
@@ -64,7 +63,7 @@ func NewMeshGossiper(listen string, channelName string, nodeName string, passwor
 		Password:           password,
 		ConnLimit:          connLimit,
 		PeerDiscovery:      true,
-		//TrustedSubnets:     []*net.IPNet{},
+		// TrustedSubnets:     []*net.IPNet{},
 	}
 
 	{
@@ -87,10 +86,16 @@ func NewMeshGossiper(listen string, channelName string, nodeName string, passwor
 
 	nickname := nodeName
 	logger := &glogLogger{}
-	router := mesh.NewRouter(meshConfig, meshName, nickname, mesh.NullOverlay{}, logger)
+	router, err := mesh.NewRouter(meshConfig, meshName, nickname, mesh.NullOverlay{}, logger)
+	if err != nil {
+		return nil, fmt.Errorf("error creating new mesh router: %v", err)
+	}
 
 	peer := newPeer(meshName)
-	gossip := router.NewGossip(channelName, peer)
+	gossip, err := router.NewGossip(channelName, peer)
+	if err != nil {
+		return nil, fmt.Errorf("error creating new gossip channel: %v", err)
+	}
 	peer.register(gossip)
 
 	gossiper := &MeshGossiper{
@@ -102,7 +107,7 @@ func NewMeshGossiper(listen string, channelName string, nodeName string, passwor
 }
 
 func (g *MeshGossiper) Start() error {
-	//klog.Infof("mesh router starting (%s)", *meshListen)
+	// klog.Infof("mesh router starting (%s)", *meshListen)
 	g.router.Start()
 
 	defer func() {

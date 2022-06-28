@@ -22,7 +22,7 @@ import (
 	"github.com/gophercloud/gophercloud"
 	"github.com/gophercloud/gophercloud/openstack/compute/v2/servers"
 	"github.com/gophercloud/gophercloud/pagination"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/protokube/pkg/gossip"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
@@ -49,6 +49,11 @@ func (p *SeedProvider) GetSeeds() ([]string, error) {
 
 		for _, server := range s {
 			if clusterName, ok := server.Metadata[openstack.TagClusterName]; ok {
+				// verify that the instance is from the same cluster
+				if clusterName != p.clusterName {
+					continue
+				}
+
 				var err error
 				// find kopsNetwork from metadata, fallback to clustername
 				ifName := clusterName
@@ -65,7 +70,6 @@ func (p *SeedProvider) GetSeeds() ([]string, error) {
 		}
 		return true, nil
 	})
-
 	if err != nil {
 		return seeds, fmt.Errorf("Failed to list servers while retrieving seeds: %v", err)
 	}

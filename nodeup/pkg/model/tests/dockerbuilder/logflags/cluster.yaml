@@ -9,6 +9,8 @@ spec:
   channel: stable
   cloudProvider: aws
   configBase: memfs://logflags.example.com/minimal.example.com
+  docker:
+    version: 19.03.11
   etcdClusters:
   - etcdMembers:
     - instanceGroup: master-us-test-1a
@@ -18,7 +20,9 @@ spec:
     - instanceGroup: master-us-test-1a
       name: master-us-test-1a
     name: events
-  kubernetesVersion: v1.6.0
+  iam:
+    legacy: false
+  kubernetesVersion: v1.18.0
   masterInternalName: api.internal.logflags.example.com
   masterPublicName: api.logflags.example.com
   networkCIDR: 172.20.0.0/16

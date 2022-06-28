@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/protokube/pkg/gossip"
 )
 
@@ -60,7 +60,6 @@ func RunDNSUpdates(target DNSTarget, src *DNSView) {
 
 		lastSnapshot = snapshot
 	}
-
 }
 
 type DNSView struct {

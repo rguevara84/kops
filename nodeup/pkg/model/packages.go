@@ -19,8 +19,9 @@ package model
 import (
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
+	"k8s.io/kops/util/pkg/distributions"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // PackagesBuilder adds miscellaneous OS packages that we need
@@ -37,17 +38,49 @@ func (b *PackagesBuilder) Build(c *fi.ModelBuilderContext) error {
 	//   ebtables - kops #1711
 	//   ethtool - kops #1830
 	if b.Distribution.IsDebianFamily() {
+		// From containerd: https://github.com/containerd/cri/blob/master/contrib/ansible/tasks/bootstrap_ubuntu.yaml
+		c.AddTask(&nodetasks.Package{Name: "bridge-utils"})
+		c.AddTask(&nodetasks.Package{Name: "cgroupfs-mount"})
 		c.AddTask(&nodetasks.Package{Name: "conntrack"})
 		c.AddTask(&nodetasks.Package{Name: "ebtables"})
 		c.AddTask(&nodetasks.Package{Name: "ethtool"})
+		c.AddTask(&nodetasks.Package{Name: "iptables"})
+		c.AddTask(&nodetasks.Package{Name: "libapparmor1"})
+		c.AddTask(&nodetasks.Package{Name: "libseccomp2"})
+		c.AddTask(&nodetasks.Package{Name: "libltdl7"})
+		c.AddTask(&nodetasks.Package{Name: "pigz"})
+		c.AddTask(&nodetasks.Package{Name: "socat"})
+		c.AddTask(&nodetasks.Package{Name: "util-linux"})
+		// Additional packages
+		for _, additionalPackage := range b.NodeupConfig.Packages {
+			c.EnsureTask(&nodetasks.Package{Name: additionalPackage})
+		}
 	} else if b.Distribution.IsRHELFamily() {
+		// From containerd: https://github.com/containerd/cri/blob/master/contrib/ansible/tasks/bootstrap_centos.yaml
 		c.AddTask(&nodetasks.Package{Name: "conntrack-tools"})
 		c.AddTask(&nodetasks.Package{Name: "ebtables"})
 		c.AddTask(&nodetasks.Package{Name: "ethtool"})
+		c.AddTask(&nodetasks.Package{Name: "iptables"})
+		c.AddTask(&nodetasks.Package{Name: "libcgroup"})
+		c.AddTask(&nodetasks.Package{Name: "libseccomp"})
+		c.AddTask(&nodetasks.Package{Name: "libtool-ltdl"})
 		c.AddTask(&nodetasks.Package{Name: "socat"})
+		c.AddTask(&nodetasks.Package{Name: "util-linux"})
+		// Handle some packages differently for each distro
+		switch b.Distribution {
+		case distributions.DistributionAmazonLinux2:
+			// Amazon Linux 2 doesn't have SELinux enabled by default
+		default:
+			c.AddTask(&nodetasks.Package{Name: "container-selinux"})
+			c.AddTask(&nodetasks.Package{Name: "pigz"})
+		}
+		// Additional packages
+		for _, additionalPackage := range b.NodeupConfig.Packages {
+			c.EnsureTask(&nodetasks.Package{Name: additionalPackage})
+		}
 	} else {
-		// Hopefully it's already installed
-		klog.Infof("ebtables package not known for distro %q", b.Distribution)
+		// Hopefully they are already installed
+		klog.Warningf("unknown distribution, skipping required packages install: %v", b.Distribution)
 	}
 
 	return nil

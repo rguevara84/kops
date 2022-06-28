@@ -21,25 +21,27 @@ import (
 	"reflect"
 	"strings"
 
-	compute "google.golang.org/api/compute/v0.beta"
-	"k8s.io/klog"
+	compute "google.golang.org/api/compute/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
 var scopeAliases map[string]string
 
-//go:generate fitask -type=Instance
+// +kops:fitask
 type Instance struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	Network     *Network
-	Tags        []string
-	Preemptible *bool
-	Image       *string
-	Disks       map[string]*Disk
+	Network        *Network
+	Tags           []string
+	Preemptible    *bool
+	Image          *string
+	Disks          map[string]*Disk
+	ServiceAccount *ServiceAccount
 
 	CanIPForward *bool
 	IPAddress    *Address
@@ -63,7 +65,7 @@ func (e *Instance) CompareWithID() *string {
 func (e *Instance) Find(c *fi.Context) (*Instance, error) {
 	cloud := c.Cloud.(gce.GCECloud)
 
-	r, err := cloud.Compute().Instances.Get(cloud.Project(), *e.Zone, *e.Name).Do()
+	r, err := cloud.Compute().Instances().Get(cloud.Project(), *e.Zone, *e.Name)
 	if err != nil {
 		if gce.IsNotFound(err) {
 			return nil, nil
@@ -87,11 +89,11 @@ func (e *Instance) Find(c *fi.Context) (*Instance, error) {
 		if len(ni.AccessConfigs) != 0 {
 			ac := ni.AccessConfigs[0]
 			if ac.NatIP != "" {
-				addr, err := cloud.Compute().Addresses.List(cloud.Project(), cloud.Region()).Filter("address eq " + ac.NatIP).Do()
+				addrs, err := cloud.Compute().Addresses().ListWithFilter(cloud.Project(), cloud.Region(), "address eq "+ac.NatIP)
 				if err != nil {
 					return nil, fmt.Errorf("error querying for address %q: %v", ac.NatIP, err)
-				} else if len(addr.Items) != 0 {
-					actual.IPAddress = &Address{Name: &addr.Items[0].Name}
+				} else if len(addrs) != 0 {
+					actual.IPAddress = &Address{Name: &addrs[0].Name}
 				} else {
 					return nil, fmt.Errorf("address not found %q: %v", ac.NatIP, err)
 				}
@@ -112,7 +114,7 @@ func (e *Instance) Find(c *fi.Context) (*Instance, error) {
 
 			// TODO: Parse source URL instead of assuming same project/zone?
 			name := lastComponent(source)
-			d, err := cloud.Compute().Disks.Get(cloud.Project(), *e.Zone, name).Do()
+			d, err := cloud.Compute().Disks().Get(cloud.Project(), *e.Zone, name)
 			if err != nil {
 				if gce.IsNotFound(err) {
 					return nil, fmt.Errorf("disk not found %q: %v", source, err)
@@ -253,17 +255,18 @@ func (e *Instance) mapToGCE(project string, ipAddressResolver func(*Address) (*s
 	}
 
 	var serviceAccounts []*compute.ServiceAccount
-	if e.Scopes != nil {
-		var scopes []string
-		for _, s := range e.Scopes {
-			s = scopeToLongForm(s)
-
-			scopes = append(scopes, s)
+	if e.ServiceAccount != nil {
+		if e.Scopes != nil {
+			var scopes []string
+			for _, s := range e.Scopes {
+				s = scopeToLongForm(s)
+				scopes = append(scopes, s)
+			}
+			serviceAccounts = append(serviceAccounts, &compute.ServiceAccount{
+				Email:  fi.StringValue(e.ServiceAccount.Email),
+				Scopes: scopes,
+			})
 		}
-		serviceAccounts = append(serviceAccounts, &compute.ServiceAccount{
-			Email:  "default",
-			Scopes: scopes,
-		})
 	}
 
 	var metadataItems []*compute.MetadataItems
@@ -324,8 +327,7 @@ func (_ *Instance) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Instance) error
 
 	if a == nil {
 		klog.V(2).Infof("Creating instance %q", i.Name)
-		_, err := cloud.Compute().Instances.Insert(project, zone, i).Do()
-		if err != nil {
+		if _, err := cloud.Compute().Instances().Insert(project, zone, i); err != nil {
 			return fmt.Errorf("error creating Instance: %v", err)
 		}
 	} else {
@@ -334,7 +336,7 @@ func (_ *Instance) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Instance) error
 
 			i.Metadata.Fingerprint = a.metadataFingerprint
 
-			op, err := cloud.Compute().Instances.SetMetadata(project, zone, i.Name, i.Metadata).Do()
+			op, err := cloud.Compute().Instances().SetMetadata(project, zone, i.Name, i.Metadata)
 			if err != nil {
 				return fmt.Errorf("error setting metadata on instance: %v", err)
 			}
@@ -348,7 +350,7 @@ func (_ *Instance) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Instance) error
 
 		if !changes.isZero() {
 			klog.Errorf("Cannot apply changes to Instance: %v", changes)
-			return fmt.Errorf("Cannot apply changes to Instance: %v", changes)
+			return fmt.Errorf("cannot apply changes to Instance: %v", changes)
 		}
 	}
 
@@ -392,9 +394,29 @@ func ShortenImageURL(defaultProject string, imageURL string) (string, error) {
 }
 
 type terraformInstance struct {
-	terraformInstanceCommon
+	Name                  string                              `cty:"name"`
+	CanIPForward          bool                                `cty:"can_ip_forward"`
+	MachineType           string                              `cty:"machine_type"`
+	ServiceAccounts       []*terraformTemplateServiceAccount  `cty:"service_account"`
+	Scheduling            *terraformScheduling                `cty:"scheduling"`
+	Disks                 []*terraformInstanceAttachedDisk    `cty:"disk"`
+	NetworkInterfaces     []*terraformNetworkInterface        `cty:"network_interface"`
+	Metadata              map[string]*terraformWriter.Literal `cty:"metadata"`
+	MetadataStartupScript *terraformWriter.Literal            `cty:"metadata_startup_script"`
+	Tags                  []string                            `cty:"tags"`
+	Zone                  string                              `cty:"zone"`
+}
 
-	Name string `json:"name"`
+type terraformInstanceAttachedDisk struct {
+	AutoDelete bool   `cty:"auto_delete"`
+	DeviceName string `cty:"device_name"`
+
+	// 'pd-standard', 'pd-ssd', 'local-ssd' etc
+	Type    string `cty:"type"`
+	Disk    string `cty:"disk"`
+	Image   string `cty:"image"`
+	Scratch bool   `cty:"scratch"`
+	Size    int64  `cty:"size"`
 }
 
 func (_ *Instance) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Instance) error {
@@ -424,10 +446,10 @@ func (_ *Instance) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *
 		tf.Zone = *e.Zone
 	}
 
-	tf.AddServiceAccounts(i.ServiceAccounts)
+	tf.ServiceAccounts = mapServiceAccountsToTerraform([]*ServiceAccount{e.ServiceAccount}, e.Scopes)
 
 	for _, d := range i.Disks {
-		tfd := &terraformAttachedDisk{
+		tfd := &terraformInstanceAttachedDisk{
 			AutoDelete: d.AutoDelete,
 			Scratch:    d.Type == "SCRATCH",
 			DeviceName: d.DeviceName,
@@ -444,9 +466,13 @@ func (_ *Instance) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *
 		tf.Disks = append(tf.Disks, tfd)
 	}
 
-	tf.AddNetworks(e.Network, e.Subnet, i.NetworkInterfaces)
+	tf.NetworkInterfaces = addNetworks(e.Network, e.Subnet, i.NetworkInterfaces)
 
-	tf.AddMetadata(t, i.Name, i.Metadata)
+	metadata, err := addMetadata(t, i.Name, i.Metadata)
+	if err != nil {
+		return err
+	}
+	tf.Metadata = metadata
 
 	// Using metadata_startup_script is now mandatory (?)
 	{

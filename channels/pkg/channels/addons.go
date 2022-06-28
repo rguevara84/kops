@@ -21,8 +21,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/blang/semver"
-	"k8s.io/klog"
+	"github.com/blang/semver/v4"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/channels/pkg/api"
 	"k8s.io/kops/upup/pkg/fi/utils"
 	"k8s.io/kops/util/pkg/vfs"
@@ -74,7 +74,7 @@ func (a *Addons) GetCurrent(kubernetesVersion semver.Version) (*AddonMenu, error
 		name := addon.Name
 
 		existing := menu.Addons[name]
-		if existing == nil || addon.ChannelVersion().replaces(existing.ChannelVersion()) {
+		if existing == nil || addon.ChannelVersion().replaces(name, existing.ChannelVersion()) {
 			menu.Addons[name] = addon
 		}
 	}

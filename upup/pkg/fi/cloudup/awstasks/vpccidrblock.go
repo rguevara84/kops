@@ -19,17 +19,19 @@ package awstasks
 import (
 	"fmt"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=VPCCIDRBlock
+// +kops:fitask
 type VPCCIDRBlock struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	VPC       *VPC
 	CIDRBlock *string
@@ -41,17 +43,44 @@ type VPCCIDRBlock struct {
 func (e *VPCCIDRBlock) Find(c *fi.Context) (*VPCCIDRBlock, error) {
 	cloud := c.Cloud.(awsup.AWSCloud)
 
-	vpcID := e.VPC.ID
+	vpcID := aws.StringValue(e.VPC.ID)
 
-	vpc, err := cloud.DescribeVPC(*vpcID)
+	// If the VPC doesn't (yet) exist, there is no association
+	if vpcID == "" {
+		return nil, nil
+	}
+
+	vpc, err := cloud.DescribeVPC(vpcID)
 	if err != nil {
 		return nil, err
 	}
 
+	found := false
+	if e.CIDRBlock != nil {
+		for _, cba := range vpc.CidrBlockAssociationSet {
+			if cba == nil || cba.CidrBlockState == nil {
+				continue
+			}
+
+			state := aws.StringValue(cba.CidrBlockState.State)
+			if state != ec2.VpcCidrBlockStateCodeAssociated && state != ec2.VpcCidrBlockStateCodeAssociating {
+				continue
+			}
+
+			if aws.StringValue(cba.CidrBlock) == aws.StringValue(e.CIDRBlock) {
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+
 	actual := &VPCCIDRBlock{
+		VPC:       &VPC{ID: vpc.VpcId},
 		CIDRBlock: e.CIDRBlock,
 	}
-	actual.VPC = &VPC{ID: vpc.VpcId}
 
 	// Prevent spurious changes
 	actual.Shared = e.Shared
@@ -88,12 +117,11 @@ func (s *VPCCIDRBlock) CheckChanges(a, e, changes *VPCCIDRBlock) error {
 }
 
 func (_ *VPCCIDRBlock) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *VPCCIDRBlock) error {
-	shared := fi.BoolValue(e.Shared)
-	if shared {
-		// Verify the CIDR block was found.
-		if a == nil {
-			return fmt.Errorf("CIDR block %q not found", fi.StringValue(e.CIDRBlock))
-		}
+	shared := aws.BoolValue(e.Shared)
+	if shared && a == nil {
+		// VPC not owned by kOps, no changes will be applied
+		// Verify that the CIDR block was found.
+		return fmt.Errorf("CIDR block %q not found", aws.StringValue(e.CIDRBlock))
 	}
 
 	if changes.CIDRBlock != nil {
@@ -112,11 +140,17 @@ func (_ *VPCCIDRBlock) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *VPCCIDRBl
 }
 
 type terraformVPCCIDRBlock struct {
-	VPCID     *terraform.Literal `json:"vpc_id"`
-	CIDRBlock *string            `json:"cidr_block"`
+	VPCID     *terraformWriter.Literal `cty:"vpc_id"`
+	CIDRBlock *string                  `cty:"cidr_block"`
 }
 
 func (_ *VPCCIDRBlock) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *VPCCIDRBlock) error {
+	shared := aws.BoolValue(e.Shared)
+	if shared && a == nil {
+		// VPC not owned by kOps, no changes will be applied
+		// Verify that the CIDR block was found.
+		return fmt.Errorf("CIDR block %q not found", aws.StringValue(e.CIDRBlock))
+	}
 
 	// When this has been enabled please fix test TestAdditionalCIDR in integration_test.go to run runTestAWS.
 	tf := &terraformVPCCIDRBlock{
@@ -124,7 +158,10 @@ func (_ *VPCCIDRBlock) RenderTerraform(t *terraform.TerraformTarget, a, e, chang
 		CIDRBlock: e.CIDRBlock,
 	}
 
-	return t.RenderResource("aws_vpc_ipv4_cidr_block_association", *e.Name, tf)
+	// Terraform 0.12 doesn't support resource names that start with digits. See #7052
+	// and https://www.terraform.io/upgrade-guides/0-12.html#pre-upgrade-checklist
+	name := fmt.Sprintf("cidr-%v", *e.Name)
+	return t.RenderResource("aws_vpc_ipv4_cidr_block_association", name, tf)
 }
 
 type cloudformationVPCCIDRBlock struct {
@@ -133,6 +170,13 @@ type cloudformationVPCCIDRBlock struct {
 }
 
 func (_ *VPCCIDRBlock) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *VPCCIDRBlock) error {
+	shared := aws.BoolValue(e.Shared)
+	if shared && a == nil {
+		// VPC not owned by kOps, no changes will be applied
+		// Verify that the CIDR block was found.
+		return fmt.Errorf("CIDR block %q not found", aws.StringValue(e.CIDRBlock))
+	}
+
 	cf := &cloudformationVPCCIDRBlock{
 		VPCID:     e.VPC.CloudformationLink(),
 		CIDRBlock: e.CIDRBlock,

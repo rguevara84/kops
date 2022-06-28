@@ -20,18 +20,18 @@ import (
 	"fmt"
 	"reflect"
 
-	compute "google.golang.org/api/compute/v0.beta"
-	"k8s.io/klog"
+	compute "google.golang.org/api/compute/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
 )
 
 // Disk represents a GCE PD
-//go:generate fitask -type=Disk
+// +kops:fitask
 type Disk struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	VolumeType *string
 	SizeGB     *int64
@@ -48,7 +48,7 @@ func (e *Disk) CompareWithID() *string {
 func (e *Disk) Find(c *fi.Context) (*Disk, error) {
 	cloud := c.Cloud.(gce.GCECloud)
 
-	r, err := cloud.Compute().Disks.Get(cloud.Project(), *e.Zone, *e.Name).Do()
+	r, err := cloud.Compute().Disks().Get(cloud.Project(), *e.Zone, *e.Name)
 	if err != nil {
 		if gce.IsNotFound(err) {
 			return nil, nil
@@ -117,14 +117,13 @@ func (_ *Disk) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Disk) error {
 	}
 
 	if a == nil {
-		_, err := cloud.Compute().Disks.Insert(t.Cloud.Project(), *e.Zone, disk).Do()
-		if err != nil {
+		if _, err := cloud.Compute().Disks().Insert(t.Cloud.Project(), *e.Zone, disk); err != nil {
 			return fmt.Errorf("error creating Disk: %v", err)
 		}
 	}
 
 	if changes.Labels != nil {
-		d, err := cloud.Compute().Disks.Get(t.Cloud.Project(), *e.Zone, disk.Name).Do()
+		d, err := cloud.Compute().Disks().Get(t.Cloud.Project(), *e.Zone, disk.Name)
 		if err != nil {
 			return fmt.Errorf("error reading created Disk: %v", err)
 		}
@@ -147,8 +146,7 @@ func (_ *Disk) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Disk) error {
 			labelsRequest.Labels[k] = v
 		}
 		klog.V(2).Infof("Setting labels on disk %q: %v", disk.Name, labelsRequest.Labels)
-		_, err = t.Cloud.Compute().Disks.SetLabels(t.Cloud.Project(), *e.Zone, disk.Name, labelsRequest).Do()
-		if err != nil {
+		if err = t.Cloud.Compute().Disks().SetLabels(t.Cloud.Project(), *e.Zone, disk.Name, labelsRequest); err != nil {
 			return fmt.Errorf("error setting labels on created Disk: %v", err)
 		}
 		changes.Labels = nil
@@ -157,7 +155,7 @@ func (_ *Disk) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Disk) error {
 	if a != nil && changes != nil {
 		empty := &Disk{}
 		if !reflect.DeepEqual(empty, changes) {
-			return fmt.Errorf("Cannot apply changes to Disk: %v", changes)
+			return fmt.Errorf("cannot apply changes to Disk: %v", changes)
 		}
 	}
 
@@ -165,11 +163,11 @@ func (_ *Disk) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Disk) error {
 }
 
 type terraformDisk struct {
-	Name       *string           `json:"name"`
-	VolumeType *string           `json:"type"`
-	SizeGB     *int64            `json:"size"`
-	Zone       *string           `json:"zone"`
-	Labels     map[string]string `json:"labels,omitempty"`
+	Name       *string           `cty:"name"`
+	VolumeType *string           `cty:"type"`
+	SizeGB     *int64            `cty:"size"`
+	Zone       *string           `cty:"zone"`
+	Labels     map[string]string `cty:"labels"`
 }
 
 func (_ *Disk) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Disk) error {

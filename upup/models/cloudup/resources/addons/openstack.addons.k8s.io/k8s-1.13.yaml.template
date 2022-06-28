@@ -49,6 +49,14 @@ metadata:
     k8s-addon: openstack.addons.k8s.io
 rules:
 - apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - create
+  - update
+- apiGroups:
   - ""
   resources:
   - events
@@ -80,10 +88,22 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - services/status
+  verbs:
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - serviceaccounts
   verbs:
   - create
   - get
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts/token
+  verbs:
+  - create
 - apiGroups:
   - ""
   resources:
@@ -115,6 +135,7 @@ rules:
   verbs:
   - list
   - get
+  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -166,11 +187,22 @@ spec:
       labels:
         name: openstack-cloud-provider
     spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+            - matchExpressions:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+
       # run on the host network (don't depend on CNI)
       hostNetwork: true
       # run on each master node
-      nodeSelector:
-        node-role.kubernetes.io/master: ""
+      priorityClassName: system-node-critical
+      nodeSelector: null
       securityContext:
         runAsUser: 1001
       serviceAccountName: cloud-controller-manager
@@ -181,17 +213,15 @@ spec:
         operator: Exists
       containers:
       - name: openstack-cloud-controller-manager
-        image: "{{- if .ExternalCloudControllerManager.Image -}} {{ .ExternalCloudControllerManager.Image }} {{- else -}} {{OpenStackCCM}} {{- end -}}"
+        image: "{{- if .ExternalCloudControllerManager.Image -}} {{ .ExternalCloudControllerManager.Image }} {{- else -}} docker.io/k8scloudprovider/openstack-cloud-controller-manager:{{OpenStackCCMTag}} {{- end -}}"
         args:
           - /bin/openstack-cloud-controller-manager
-          - --v={{ if .ExternalCloudControllerManager.LogLevel -}} {{ .ExternalCloudControllerManager.LogLevel }} {{- else }}2{{ end }}
-          - --cloud-config=/etc/kubernetes/cloud.config
-          - --cloud-provider=openstack
-          - --use-service-account-credentials=true
-          - --address=127.0.0.1
+{{- range $arg := CloudControllerConfigArgv }}
+          - {{ $arg }}
+{{- end }}
         resources:
           requests:
-            cpu: 200m
+            cpu: {{ or .ExternalCloudControllerManager.CPURequest "200m" }}
         volumeMounts:
         - mountPath: /etc/kubernetes/cloud.config
           name: cloudconfig

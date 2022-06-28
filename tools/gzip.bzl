@@ -1,9 +1,10 @@
 def _impl(ctx):
     in_file = ctx.file.src
 
-    out_file = ctx.actions.declare_file("%s.gz" % in_file.path)
+    basename = ctx.attr.src.label.name
+    out_file = ctx.actions.declare_file("%s.gz" % basename)
 
-    cmd = "gzip -c '%s' > '%s'" % (in_file.path, out_file.path)
+    cmd = "gzip --no-name -c '%s' > '%s'" % (in_file.path, out_file.path)
 
     ctx.actions.run_shell(
         outputs = [out_file],

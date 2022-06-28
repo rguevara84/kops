@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/blang/semver"
-	"k8s.io/klog"
+	"github.com/blang/semver/v4"
+	"k8s.io/klog/v2"
 )
 
 func ParseKubernetesVersion(version string) (*semver.Version, error) {
@@ -72,6 +72,26 @@ func ParseKubernetesVersion(version string) (*semver.Version, error) {
 			sv = semver.Version{Major: 1, Minor: 18}
 		} else if strings.Contains(v, "/v1.19.") {
 			sv = semver.Version{Major: 1, Minor: 19}
+		} else if strings.Contains(v, "/v1.20.") {
+			sv = semver.Version{Major: 1, Minor: 20}
+		} else if strings.Contains(v, "/v1.21.") {
+			sv = semver.Version{Major: 1, Minor: 21}
+		} else if strings.Contains(v, "/v1.22.") {
+			sv = semver.Version{Major: 1, Minor: 22}
+		} else if strings.Contains(v, "/v1.23.") {
+			sv = semver.Version{Major: 1, Minor: 23}
+		} else if strings.Contains(v, "/v1.24.") {
+			sv = semver.Version{Major: 1, Minor: 24}
+		} else if strings.Contains(v, "/v1.25.") {
+			sv = semver.Version{Major: 1, Minor: 25}
+		} else if strings.Contains(v, "/v1.26.") {
+			sv = semver.Version{Major: 1, Minor: 26}
+		} else if strings.Contains(v, "/v1.27.") {
+			sv = semver.Version{Major: 1, Minor: 27}
+		} else if strings.Contains(v, "/v1.28.") {
+			sv = semver.Version{Major: 1, Minor: 28}
+		} else if strings.Contains(v, "/v1.29.") {
+			sv = semver.Version{Major: 1, Minor: 29}
 		} else {
 			klog.Errorf("unable to parse Kubernetes version %q", version)
 			return nil, fmt.Errorf("unable to parse kubernetes version %q", version)
@@ -95,4 +115,28 @@ func IsKubernetesGTE(version string, k8sVersion semver.Version) bool {
 	k8sVersion.Build = nil
 
 	return k8sVersion.GTE(*parsedVersion)
+}
+
+// Version is our helper type for semver versions.
+type Version struct {
+	v semver.Version
+}
+
+// ParseVersion parses the semver version string into a Version.
+func ParseVersion(s string) (*Version, error) {
+	v, err := semver.Parse(s)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing version %q: %w", s, err)
+	}
+	return &Version{v: v}, nil
+}
+
+// String returns a string representation of the object
+func (v *Version) String() string {
+	return v.v.String()
+}
+
+// IsInRange checks if we are in the provided semver range
+func (v *Version) IsInRange(semverRange semver.Range) bool {
+	return semverRange(v.v)
 }

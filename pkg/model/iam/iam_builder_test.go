@@ -18,15 +18,16 @@ package iam
 
 import (
 	"encoding/json"
-	"io/ioutil"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/pkg/diff"
+	"k8s.io/kops/pkg/testutils"
+	"k8s.io/kops/pkg/testutils/golden"
 	"k8s.io/kops/pkg/util/stringorslice"
+	"k8s.io/kops/upup/pkg/fi"
 )
 
 func TestRoundTrip(t *testing.T) {
@@ -40,7 +41,7 @@ func TestRoundTrip(t *testing.T) {
 				Action:   stringorslice.Of("ec2:DescribeRegions"),
 				Resource: stringorslice.Of("*"),
 			},
-			JSON: "{\"Effect\":\"Allow\",\"Action\":\"ec2:DescribeRegions\",\"Resource\":\"*\"}",
+			JSON: "{\"Action\":\"ec2:DescribeRegions\",\"Effect\":\"Allow\",\"Resource\":\"*\"}",
 		},
 		{
 			IAM: &Statement{
@@ -48,13 +49,33 @@ func TestRoundTrip(t *testing.T) {
 				Action:   stringorslice.Of("ec2:DescribeRegions", "ec2:DescribeInstances"),
 				Resource: stringorslice.Of("a", "b"),
 			},
-			JSON: "{\"Effect\":\"Deny\",\"Action\":[\"ec2:DescribeRegions\",\"ec2:DescribeInstances\"],\"Resource\":[\"a\",\"b\"]}",
+			JSON: "{\"Action\":[\"ec2:DescribeRegions\",\"ec2:DescribeInstances\"],\"Effect\":\"Deny\",\"Resource\":[\"a\",\"b\"]}",
+		},
+		{
+			IAM: &Statement{
+				Effect:    StatementEffectDeny,
+				Principal: Principal{Federated: "federated"},
+				Condition: map[string]interface{}{
+					"foo": 1,
+				},
+			},
+			JSON: "{\"Condition\":{\"foo\":1},\"Effect\":\"Deny\",\"Principal\":{\"Federated\":\"federated\"}}",
+		},
+		{
+			IAM: &Statement{
+				Effect:    StatementEffectDeny,
+				Principal: Principal{Service: "service"},
+				Condition: map[string]interface{}{
+					"bar": "baz",
+				},
+			},
+			JSON: "{\"Condition\":{\"bar\":\"baz\"},\"Effect\":\"Deny\",\"Principal\":{\"Service\":\"service\"}}",
 		},
 	}
 	for _, g := range grid {
 		actualJSON, err := json.Marshal(g.IAM)
 		if err != nil {
-			t.Errorf("error encoding IAM %s to json: %v", g.IAM, err)
+			t.Errorf("error encoding IAM %v to json: %v", g.IAM, err)
 		}
 
 		if g.JSON != string(actualJSON) {
@@ -76,62 +97,37 @@ func TestRoundTrip(t *testing.T) {
 
 func TestPolicyGeneration(t *testing.T) {
 	grid := []struct {
-		Role                   kops.InstanceGroupRole
-		LegacyIAM              bool
+		Role                   Subject
 		AllowContainerRegistry bool
 		Policy                 string
 	}{
 		{
-			Role:                   "Master",
-			LegacyIAM:              true,
-			AllowContainerRegistry: false,
-			Policy:                 "tests/iam_builder_master_legacy.json",
-		},
-		{
-			Role:                   "Master",
-			LegacyIAM:              false,
+			Role:                   &NodeRoleMaster{},
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_master_strict.json",
 		},
 		{
-			Role:                   "Master",
-			LegacyIAM:              false,
+			Role:                   &NodeRoleMaster{},
 			AllowContainerRegistry: true,
 			Policy:                 "tests/iam_builder_master_strict_ecr.json",
 		},
 		{
-			Role:                   "Node",
-			LegacyIAM:              true,
-			AllowContainerRegistry: false,
-			Policy:                 "tests/iam_builder_node_legacy.json",
-		},
-		{
-			Role:                   "Node",
-			LegacyIAM:              false,
+			Role:                   &NodeRoleNode{},
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_node_strict.json",
 		},
 		{
-			Role:                   "Node",
-			LegacyIAM:              false,
+			Role:                   &NodeRoleNode{},
 			AllowContainerRegistry: true,
 			Policy:                 "tests/iam_builder_node_strict_ecr.json",
 		},
 		{
-			Role:                   "Bastion",
-			LegacyIAM:              true,
+			Role:                   &NodeRoleBastion{},
 			AllowContainerRegistry: false,
 			Policy:                 "tests/iam_builder_bastion.json",
 		},
 		{
-			Role:                   "Bastion",
-			LegacyIAM:              false,
-			AllowContainerRegistry: false,
-			Policy:                 "tests/iam_builder_bastion.json",
-		},
-		{
-			Role:                   "Bastion",
-			LegacyIAM:              false,
+			Role:                   &NodeRoleBastion{},
 			AllowContainerRegistry: true,
 			Policy:                 "tests/iam_builder_bastion.json",
 		},
@@ -143,34 +139,42 @@ func TestPolicyGeneration(t *testing.T) {
 				Spec: kops.ClusterSpec{
 					ConfigStore: "s3://kops-tests/iam-builder-test.k8s.local",
 					IAM: &kops.IAMSpec{
-						Legacy:                 x.LegacyIAM,
 						AllowContainerRegistry: x.AllowContainerRegistry,
 					},
-					EtcdClusters: []*kops.EtcdClusterSpec{
+					EtcdClusters: []kops.EtcdClusterSpec{
 						{
-							Members: []*kops.EtcdMemberSpec{
+							Members: []kops.EtcdMemberSpec{
 								{
-									KmsKeyId: aws.String("key-id-1"),
+									KmsKeyID: aws.String("key-id-1"),
 								},
 								{
-									KmsKeyId: aws.String("key-id-2"),
-								},
-							},
-						},
-						{
-							Members: []*kops.EtcdMemberSpec{},
-						},
-						{
-							Members: []*kops.EtcdMemberSpec{
-								{
-									KmsKeyId: aws.String("key-id-3"),
+									KmsKeyID: aws.String("key-id-2"),
 								},
 							},
 						},
+						{
+							Members: []kops.EtcdMemberSpec{},
+						},
+						{
+							Members: []kops.EtcdMemberSpec{
+								{
+									KmsKeyID: aws.String("key-id-3"),
+								},
+							},
+						},
+					},
+					CloudConfig: &kops.CloudConfiguration{
+						AWSEBSCSIDriver: &kops.AWSEBSCSIDriver{
+							Enabled: fi.Bool(true),
+						},
+					},
+					Networking: &kops.NetworkingSpec{
+						Kubenet: &kops.KubenetNetworkingSpec{},
 					},
 				},
 			},
-			Role: x.Role,
+			Role:      x.Role,
+			Partition: "aws-test",
 		}
 		b.Cluster.SetName("iam-builder-test.k8s.local")
 
@@ -185,19 +189,36 @@ func TestPolicyGeneration(t *testing.T) {
 			t.Errorf("case %d failed to convert generated IAM Policy to JSON. Error: %v", i, err)
 			continue
 		}
-		actualPolicy = strings.TrimSpace(actualPolicy)
 
-		expectedPolicyBytes, err := ioutil.ReadFile(x.Policy)
-		if err != nil {
-			t.Fatalf("unexpected error reading IAM Policy from file %q: %v", x.Policy, err)
-		}
-		expectedPolicy := strings.TrimSpace(string(expectedPolicyBytes))
+		golden.AssertMatchesFile(t, actualPolicy, x.Policy)
+	}
+}
 
-		if expectedPolicy != actualPolicy {
-			diffString := diff.FormatDiff(expectedPolicy, actualPolicy)
-			t.Logf("diff:\n%s\n", diffString)
-			t.Errorf("case %d failed, policy output differed from expected (%s).", i, x.Policy)
-			continue
-		}
+func TestEmptyPolicy(t *testing.T) {
+	role := &GenericServiceAccount{
+		NamespacedName: types.NamespacedName{
+			Name:      "myaccount",
+			Namespace: "default",
+		},
+		Policy: nil,
+	}
+
+	cluster := testutils.BuildMinimalCluster("irsa.example.com")
+	b := &PolicyBuilder{
+		Cluster: cluster,
+		Role:    role,
+	}
+
+	pr := &PolicyResource{
+		Builder: b,
+	}
+
+	policy, err := fi.ResourceAsString(pr)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if policy != "" {
+		t.Errorf("empty policy should result in empty string, but was %q", policy)
 	}
 }

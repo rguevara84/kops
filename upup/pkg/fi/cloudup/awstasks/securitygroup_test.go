@@ -60,34 +60,34 @@ func testParsesAsPort(t *testing.T, rule string, port int) {
 
 func TestPortRemovalRule(t *testing.T) {
 	r := &PortRemovalRule{Port: 22}
-	testMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(22), ToPort: aws.Int64(22)})
+	testMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22), ToPort: aws.Int64(22)})
 
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(23), ToPort: aws.Int64(23)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(20), ToPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(22), ToPort: aws.Int64(23)})
-	testNotMatches(t, r, &ec2.IpPermission{ToPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(22)})
-	testNotMatches(t, r, &ec2.IpPermission{})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(23), ToPort: aws.Int64(23)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(20), ToPort: aws.Int64(22)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22), ToPort: aws.Int64(23)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{ToPort: aws.Int64(22)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(22)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{})
 }
 
 func TestPortRemovalRule_Zero(t *testing.T) {
 	r := &PortRemovalRule{Port: 0}
-	testMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
+	testMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(0)})
 
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0), ToPort: aws.Int64(20)})
-	testNotMatches(t, r, &ec2.IpPermission{ToPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.IpPermission{FromPort: aws.Int64(0)})
-	testNotMatches(t, r, &ec2.IpPermission{})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0), ToPort: aws.Int64(20)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{ToPort: aws.Int64(0)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{FromPort: aws.Int64(0)})
+	testNotMatches(t, r, &ec2.SecurityGroupRule{})
 }
 
-func testMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.IpPermission) {
+func testMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.SecurityGroupRule) {
 	if !rule.Matches(permission) {
 		t.Fatalf("rule %q failed to match permission %q", rule, permission)
 	}
 }
 
-func testNotMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.IpPermission) {
+func testNotMatches(t *testing.T, rule *PortRemovalRule, permission *ec2.SecurityGroupRule) {
 	if rule.Matches(permission) {
 		t.Fatalf("rule %q unexpectedly matched permission %q", rule, permission)
 	}
@@ -101,12 +101,14 @@ func TestSecurityGroupCreate(t *testing.T) {
 	// We define a function so we can rebuild the tasks, because we modify in-place when running
 	buildTasks := func() map[string]fi.Task {
 		vpc1 := &VPC{
-			Name: s("vpc1"),
-			CIDR: s("172.20.0.0/16"),
-			Tags: map[string]string{"Name": "vpc1"},
+			Name:      s("vpc1"),
+			Lifecycle: fi.LifecycleSync,
+			CIDR:      s("172.20.0.0/16"),
+			Tags:      map[string]string{"Name": "vpc1"},
 		}
 		sg1 := &SecurityGroup{
 			Name:        s("sg1"),
+			Lifecycle:   fi.LifecycleSync,
 			Description: s("Description"),
 			VPC:         vpc1,
 			Tags:        map[string]string{"Name": "sg1"},
@@ -131,6 +133,7 @@ func TestSecurityGroupCreate(t *testing.T) {
 		if err != nil {
 			t.Fatalf("error building context: %v", err)
 		}
+		defer context.Close()
 
 		if err := context.RunTasks(testRunTasksOptions); err != nil {
 			t.Fatalf("unexpected error during Run: %v", err)
@@ -148,7 +151,13 @@ func TestSecurityGroupCreate(t *testing.T) {
 			Description: s("Description"),
 			GroupId:     sg1.ID,
 			VpcId:       vpc1.ID,
-			GroupName:   s("sg1"),
+			Tags: []*ec2.Tag{
+				{
+					Key:   aws.String("Name"),
+					Value: aws.String("sg1"),
+				},
+			},
+			GroupName: s("sg1"),
 		}
 		actual := c.SecurityGroups[*sg1.ID]
 		if !reflect.DeepEqual(actual, expected) {

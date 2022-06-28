@@ -22,7 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) AddRouteTable(rt *ec2.RouteTable) {
@@ -32,10 +32,9 @@ func (m *MockEC2) AddRouteTable(rt *ec2.RouteTable) {
 	if m.RouteTables == nil {
 		m.RouteTables = make(map[string]*ec2.RouteTable)
 	}
-	for _, tag := range rt.Tags {
-		m.addTag(*rt.RouteTableId, tag)
-	}
-	rt.Tags = nil
+
+	m.addTags(*rt.RouteTableId, rt.Tags...)
+
 	m.RouteTables[*rt.RouteTableId] = rt
 }
 
@@ -138,6 +137,7 @@ func (m *MockEC2) CreateRouteTableWithId(request *ec2.CreateRouteTableInput, id 
 func (m *MockEC2) CreateRouteTableWithContext(aws.Context, *ec2.CreateRouteTableInput, ...request.Option) (*ec2.CreateRouteTableOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) CreateRouteTableRequest(*ec2.CreateRouteTableInput) (*request.Request, *ec2.CreateRouteTableOutput) {
 	panic("Not implemented")
 }
@@ -165,15 +165,18 @@ func (m *MockEC2) CreateRoute(request *ec2.CreateRouteInput) (*ec2.CreateRouteOu
 		InstanceId:                  request.InstanceId,
 		NatGatewayId:                request.NatGatewayId,
 		NetworkInterfaceId:          request.NetworkInterfaceId,
+		TransitGatewayId:            request.TransitGatewayId,
 		VpcPeeringConnectionId:      request.VpcPeeringConnectionId,
 	}
 
 	rt.Routes = append(rt.Routes, r)
 	return &ec2.CreateRouteOutput{Return: aws.Bool(true)}, nil
 }
+
 func (m *MockEC2) CreateRouteWithContext(aws.Context, *ec2.CreateRouteInput, ...request.Option) (*ec2.CreateRouteOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) CreateRouteRequest(*ec2.CreateRouteInput) (*request.Request, *ec2.CreateRouteOutput) {
 	panic("Not implemented")
 }
@@ -193,9 +196,11 @@ func (m *MockEC2) DeleteRouteTable(request *ec2.DeleteRouteTableInput) (*ec2.Del
 
 	return &ec2.DeleteRouteTableOutput{}, nil
 }
+
 func (m *MockEC2) DeleteRouteTableWithContext(aws.Context, *ec2.DeleteRouteTableInput, ...request.Option) (*ec2.DeleteRouteTableOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DeleteRouteTableRequest(*ec2.DeleteRouteTableInput) (*request.Request, *ec2.DeleteRouteTableOutput) {
 	panic("Not implemented")
 }

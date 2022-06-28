@@ -18,11 +18,11 @@ package fi
 
 import (
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strconv"
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // This file parses /etc/passwd and /etc/group to get information about users & groups
@@ -42,7 +42,7 @@ func parseUsers() (map[string]*User, error) {
 	users := make(map[string]*User)
 
 	path := "/etc/passwd"
-	b, err := ioutil.ReadFile(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("error reading user file %q", path)
 	}
@@ -91,7 +91,7 @@ func LookupUser(name string) (*User, error) {
 	return users[name], nil
 }
 
-func LookupUserById(uid int) (*User, error) {
+func LookupUserByID(uid int) (*User, error) {
 	users, err := parseUsers()
 	if err != nil {
 		return nil, fmt.Errorf("error reading users: %v", err)
@@ -107,14 +107,14 @@ func LookupUserById(uid int) (*User, error) {
 type Group struct {
 	Name string
 	Gid  int
-	//Members []string
+	// Members []string
 }
 
 func parseGroups() (map[string]*Group, error) {
 	groups := make(map[string]*Group)
 
 	path := "/etc/group"
-	b, err := ioutil.ReadFile(path)
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("error reading group file %q", path)
 	}
@@ -155,7 +155,7 @@ func LookupGroup(name string) (*Group, error) {
 	return groups[name], nil
 }
 
-func LookupGroupById(gid int) (*Group, error) {
+func LookupGroupByID(gid int) (*Group, error) {
 	users, err := parseGroups()
 	if err != nil {
 		return nil, fmt.Errorf("error reading groups: %v", err)

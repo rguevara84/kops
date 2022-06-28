@@ -18,12 +18,15 @@ spec:
     - instanceGroup: master-us-test-1a
       name: us-test-1a
     name: events
-  kubernetesVersion: v1.14.0
+  iam: {}
+  kubelet:
+    anonymousAuth: false
+  kubernetesVersion: v1.21.0
   masterInternalName: api.internal.externallb.example.com
   masterPublicName: api.externallb.example.com
   networkCIDR: 172.20.0.0/16
   networking:
-    kubenet: {}
+    cni: {}
   nonMasqueradeCIDR: 100.64.0.0/10
   sshAccess:
     - 0.0.0.0/0
@@ -55,7 +58,8 @@ spec:
   subnets:
   - us-test-1a
   externalLoadBalancers:
-  - loadBalancerName: my-elb
+  - targetGroupArn: arn:aws-test:elasticloadbalancing:us-test-1:000000000000:targetgroup/my-external-tg-1/1
+  - loadBalancerName: my-external-elb-1
 
 ---
 
@@ -76,7 +80,9 @@ spec:
   subnets:
   - us-test-1a
   externalLoadBalancers:
-  - targetGroupArn: aws:arn:elasticloadbalancing:us-test-1a:123456789012:targetgroup/my-tg/0123456789abcdef
-  - loadBalancerName: my-other-elb
-
-
+  - targetGroupArn: arn:aws-test:elasticloadbalancing:us-test-1:000000000000:targetgroup/my-external-tg-2/2
+  - targetGroupArn: arn:aws-test:elasticloadbalancing:us-test-1:000000000000:targetgroup/my-external-tg-1/1
+  - targetGroupArn: arn:aws-test:elasticloadbalancing:us-test-1:000000000000:targetgroup/my-external-tg-3/3
+  - loadBalancerName: my-external-elb-2
+  - loadBalancerName: my-external-elb-1
+  - loadBalancerName: my-external-elb-3

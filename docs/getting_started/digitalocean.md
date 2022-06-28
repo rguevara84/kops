@@ -1,6 +1,6 @@
-# Getting Started with kops on DigitalOcean
+# Getting Started with kOps on DigitalOcean
 
-**WARNING**: digitalocean support on kops is currently **alpha** meaning it is in the early stages of development and subject to change, please use with caution.
+**WARNING**: digitalocean support on kOps promoted to **beta** currently meaning it is subject to change, so please use with caution.
 
 ## Requirements
 
@@ -23,18 +23,15 @@ export DIGITALOCEAN_ACCESS_TOKEN=<access-token>  # where <access-token> is the a
 export S3_ENDPOINT=nyc3.digitaloceanspaces.com # this can also be ams3.digitaloceanspaces.com or sgp1.digitaloceanspaces.com depending on where you created your Spaces bucket
 export S3_ACCESS_KEY_ID=<access-key-id>  # where <access-key-id> is the Spaces API Access Key for your bucket
 export S3_SECRET_ACCESS_KEY=<secret-key>  # where <secret-key> is the Spaces API Secret Key for your bucket
-
-# this is required since DigitalOcean support is currently in alpha so it is feature gated
-export KOPS_FEATURE_FLAGS="AlphaAllowDO"
 ```
 
-## Creating a Cluster
+## Creating a Single Master Cluster
 
 In the following examples, `example.com` should be replaced with the DigitalOcean domain you created when going through the [Requirements](#requirements).
-Note that you kops will only be able to successfully provision clusters in regions that support block storage (AMS3, BLR1, FRA1, LON1, NYC1, NYC3, SFO2, SGP1 and TOR1).
+Note that you kOps will only be able to successfully provision clusters in regions that support block storage (AMS3, BLR1, FRA1, LON1, NYC1, NYC3, SFO3, SGP1 and TOR1).
 
 ```bash
-# coreos (the default) + flannel overlay cluster in tor1
+# debian (the default) + flannel overlay cluster in tor1
 kops create cluster --cloud=digitalocean --name=my-cluster.example.com --networking=flannel --zones=tor1 --ssh-public-key=~/.ssh/id_rsa.pub
 kops update cluster my-cluster.example.com --yes
 
@@ -46,13 +43,57 @@ kops update cluster my-cluster.example.com --yes
 kops create cluster --cloud=digitalocean --name=my-cluster.example.com --image=debian-9-x64 --networking=flannel --zones=ams3 --ssh-public-key=~/.ssh/id_rsa.pub --node-size=c-4
 kops update cluster my-cluster.example.com --yes
 
+# to validate a cluster
+kops validate cluster my-cluster.example.com
+
 # to delete a cluster
 kops delete cluster my-cluster.example.com --yes
+
+# to export kubecfg
+* follow steps as mentioned [here](https://kops.sigs.k8s.io/cli/kops_export_kubeconfig/#examples). 
+
+# to update a cluster
+* follow steps as mentioned [here](https://kops.sigs.k8s.io/operations/updates_and_upgrades/#manual-update)
+
+# to install csi driver for DO block storage
+* follow steps as mentioned [here](https://github.com/digitalocean/csi-digitalocean#installing-to-kubernetes)
+
 ```
+
+## Creating a Multi-Master HA Cluster
+
+In the below example, `dev5.k8s.local` should be replaced with any cluster name that ends with `.k8s.local` such that a gossip based cluster is created.
+Ensure the master-count is odd-numbered. A load balancer is created dynamically front-facing the master instances.
+
+```bash
+# debian (the default) + flannel overlay cluster in tor1 with 3 master setup and a public load balancer.
+kops create cluster --cloud=digitalocean --name=dev5.k8s.local --networking=cilium --api-loadbalancer-type=public --master-count=3 --zones=tor1 --ssh-public-key=~/.ssh/id_rsa.pub --yes
+
+# to delete a cluster - this will also delete the load balancer associated with the cluster.
+kops delete cluster dev5.k8s.local --yes
+```
+
+## VPC Support
+
+If you already have a VPC created and want to run kops cluster in this vpc, specify the vpc uuid as below.
+
+```bash
+/kops create cluster --cloud=digitalocean --name=dev1.example.com --vpc=af287488-862e-46c7-a783-5e5fa89cb200 --networking=cilium --zones=tor1 --ssh-public-key=~/.ssh/id_rsa.pub
+```
+
+If you want to create a new VPC for running your kops cluster, specify the network-cidr as below.
+
+```bash
+./kops create cluster --cloud=digitalocean --name=dev1.example.com --networking=calico --network-cidr=192.168.11.0/24 --zones=nyc1 --ssh-public-key=~/.ssh/id_rsa.pub --yes
+```
+
 
 ## Features Still in Development
 
-kops for DigitalOcean currently does not support these features:
-* multi master kubernetes clusters
-* rolling update for instance groups
-* multi-region clusters
+kOps for DigitalOcean currently does not support these features:
+
+* kops terraform support for DO
+
+# Next steps
+
+Now that you have a working kOps cluster, read through the [recommendations for production setups guide](production.md) to learn more about how to configure kOps for production workloads.

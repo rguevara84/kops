@@ -17,30 +17,30 @@ limitations under the License.
 package protokube
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
+	"k8s.io/kops/pkg/nodelabels"
 )
 
 // bootstrapMasterNodeLabels applies labels to the current node so that it acts as a master
-func bootstrapMasterNodeLabels(kubeContext *KubernetesContext, nodeName string) error {
+func bootstrapMasterNodeLabels(ctx context.Context, kubeContext *KubernetesContext, nodeName string) error {
 	client, err := kubeContext.KubernetesClient()
 	if err != nil {
 		return err
 	}
 
 	klog.V(2).Infof("Querying k8s for node %q", nodeName)
-	node, err := client.CoreV1().Nodes().Get(nodeName, metav1.GetOptions{})
+	node, err := client.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("error querying node %q: %v", nodeName, err)
 	}
 
-	labels := map[string]string{
-		"node-role.kubernetes.io/master": "",
-	}
+	labels := nodelabels.BuildMandatoryControlPlaneLabels()
 
 	shouldPatch := false
 	for k, v := range labels {
@@ -69,7 +69,7 @@ func bootstrapMasterNodeLabels(kubeContext *KubernetesContext, nodeName string) 
 	}
 
 	klog.V(2).Infof("sending patch for node %q: %q", node.Name, string(nodePatchJson))
-	_, err = client.CoreV1().Nodes().Patch(node.Name, types.StrategicMergePatchType, nodePatchJson)
+	_, err = client.CoreV1().Nodes().Patch(ctx, node.Name, types.StrategicMergePatchType, nodePatchJson, metav1.PatchOptions{})
 	if err != nil {
 		return fmt.Errorf("error applying patch to node: %v", err)
 	}

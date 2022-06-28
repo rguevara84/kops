@@ -22,7 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockAutoscaling) AttachLoadBalancers(request *autoscaling.AttachLoadBalancersInput) (*autoscaling.AttachLoadBalancersOutput, error) {
@@ -46,7 +46,25 @@ func (m *MockAutoscaling) AttachLoadBalancersWithContext(aws.Context, *autoscali
 	klog.Fatalf("Not implemented")
 	return nil, nil
 }
+
 func (m *MockAutoscaling) AttachLoadBalancersRequest(*autoscaling.AttachLoadBalancersInput) (*request.Request, *autoscaling.AttachLoadBalancersOutput) {
 	klog.Fatalf("Not implemented")
 	return nil, nil
+}
+
+func (m *MockAutoscaling) AttachLoadBalancerTargetGroups(request *autoscaling.AttachLoadBalancerTargetGroupsInput) (*autoscaling.AttachLoadBalancerTargetGroupsOutput, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	klog.Infof("AttachLoadBalancers: %v", request)
+
+	name := *request.AutoScalingGroupName
+
+	asg := m.Groups[name]
+	if asg == nil {
+		return nil, fmt.Errorf("Group %q not found", name)
+	}
+
+	asg.TargetGroupARNs = request.TargetGroupARNs
+	return &autoscaling.AttachLoadBalancerTargetGroupsOutput{}, nil
 }

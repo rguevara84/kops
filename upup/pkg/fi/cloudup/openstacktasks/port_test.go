@@ -24,6 +24,8 @@ import (
 
 	sg "github.com/gophercloud/gophercloud/openstack/networking/v2/extensions/security/groups"
 	"github.com/gophercloud/gophercloud/openstack/networking/v2/ports"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
@@ -58,7 +60,6 @@ func Test_Port_GetDependencies(t *testing.T) {
 }
 
 func Test_NewPortTaskFromCloud(t *testing.T) {
-	syncLifecycle := fi.LifecycleSync
 	tests := []struct {
 		desc              string
 		lifecycle         fi.Lifecycle
@@ -82,8 +83,7 @@ func Test_NewPortTaskFromCloud(t *testing.T) {
 				Network:        &Network{ID: fi.String("")},
 				SecurityGroups: []*SecurityGroup{},
 				Subnets:        []*Subnet{},
-				Tag:            fi.String(""),
-				Lifecycle:      &syncLifecycle,
+				Lifecycle:      fi.LifecycleSync,
 			},
 			expectedError: nil,
 		},
@@ -100,8 +100,7 @@ func Test_NewPortTaskFromCloud(t *testing.T) {
 				Network:        &Network{ID: fi.String("")},
 				SecurityGroups: []*SecurityGroup{},
 				Subnets:        []*Subnet{},
-				Tag:            fi.String(""),
-				Lifecycle:      &syncLifecycle,
+				Lifecycle:      fi.LifecycleSync,
 			},
 			expectedError: nil,
 		},
@@ -129,15 +128,152 @@ func Test_NewPortTaskFromCloud(t *testing.T) {
 				Name:    fi.String("name"),
 				Network: &Network{ID: fi.String("networkID")},
 				SecurityGroups: []*SecurityGroup{
-					{ID: fi.String("sg-1"), Lifecycle: &syncLifecycle},
-					{ID: fi.String("sg-2"), Lifecycle: &syncLifecycle},
+					{ID: fi.String("sg-1"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("sg-2"), Lifecycle: fi.LifecycleSync},
 				},
 				Subnets: []*Subnet{
-					{ID: fi.String("subnet-a"), Lifecycle: &syncLifecycle},
-					{ID: fi.String("subnet-b"), Lifecycle: &syncLifecycle},
+					{ID: fi.String("subnet-a"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("subnet-b"), Lifecycle: fi.LifecycleSync},
 				},
-				Lifecycle: &syncLifecycle,
-				Tag:       fi.String(""),
+				Lifecycle: fi.LifecycleSync,
+			},
+			expectedError: nil,
+		},
+		{
+			desc:      "fully populated cloud port found port nil",
+			lifecycle: fi.LifecycleSync,
+			cloud:     &portCloud{},
+			cloudPort: &ports.Port{
+				ID:        "id",
+				Name:      "name",
+				NetworkID: "networkID",
+				FixedIPs: []ports.IP{
+					{SubnetID: "subnet-a"},
+					{SubnetID: "subnet-b"},
+				},
+				SecurityGroups: []string{
+					"sg-1",
+					"sg-2",
+				},
+				Tags: []string{
+					"cluster",
+				},
+			},
+			foundPort:         nil,
+			modifiedFoundPort: nil,
+			expectedPortTask: &Port{
+				ID:        fi.String("id"),
+				Lifecycle: fi.LifecycleSync,
+				Name:      fi.String("name"),
+				Network:   &Network{ID: fi.String("networkID")},
+				SecurityGroups: []*SecurityGroup{
+					{ID: fi.String("sg-1"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("sg-2"), Lifecycle: fi.LifecycleSync},
+				},
+				Subnets: []*Subnet{
+					{ID: fi.String("subnet-a"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("subnet-b"), Lifecycle: fi.LifecycleSync},
+				},
+				Tags: []string{
+					"cluster",
+				},
+			},
+			expectedError: nil,
+		},
+		{
+			desc:      "fully populated cloud port found port not nil populates the InstanceGroupName",
+			lifecycle: fi.LifecycleSync,
+			cloud:     &portCloud{},
+			cloudPort: &ports.Port{
+				ID:        "id",
+				Name:      "name",
+				NetworkID: "networkID",
+				FixedIPs: []ports.IP{
+					{SubnetID: "subnet-a"},
+					{SubnetID: "subnet-b"},
+				},
+				SecurityGroups: []string{
+					"sg-1",
+					"sg-2",
+				},
+				Tags: []string{
+					"KopsInstanceGroup=node-ig",
+				},
+			},
+			foundPort: &Port{
+				InstanceGroupName: fi.String("node-ig"),
+				Tags: []string{
+					"KopsInstanceGroup=node-ig",
+				},
+			},
+			modifiedFoundPort: &Port{
+				ID:                fi.String("id"),
+				InstanceGroupName: fi.String("node-ig"),
+				Tags: []string{
+					"KopsInstanceGroup=node-ig",
+				},
+			},
+			expectedPortTask: &Port{
+				ID:                fi.String("id"),
+				InstanceGroupName: fi.String("node-ig"),
+				Lifecycle:         fi.LifecycleSync,
+				Name:              fi.String("name"),
+				Network:           &Network{ID: fi.String("networkID")},
+				SecurityGroups: []*SecurityGroup{
+					{ID: fi.String("sg-1"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("sg-2"), Lifecycle: fi.LifecycleSync},
+				},
+				Subnets: []*Subnet{
+					{ID: fi.String("subnet-a"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("subnet-b"), Lifecycle: fi.LifecycleSync},
+				},
+				Tags: []string{
+					"KopsInstanceGroup=node-ig",
+				},
+			},
+			expectedError: nil,
+		},
+		{
+			desc:      "fully populated cloud port found port nil populates the InstanceGroupName if found",
+			lifecycle: fi.LifecycleSync,
+			cloud:     &portCloud{},
+			cloudPort: &ports.Port{
+				ID:        "id",
+				Name:      "name",
+				NetworkID: "networkID",
+				FixedIPs: []ports.IP{
+					{SubnetID: "subnet-a"},
+					{SubnetID: "subnet-b"},
+				},
+				SecurityGroups: []string{
+					"sg-1",
+					"sg-2",
+				},
+				Tags: []string{
+					"cluster",
+					"KopsInstanceGroup=node-ig",
+				},
+			},
+			foundPort:         nil,
+			modifiedFoundPort: nil,
+			expectedPortTask: &Port{
+				ID:                fi.String("id"),
+				InstanceGroupName: fi.String("node-ig"),
+				Lifecycle:         fi.LifecycleSync,
+				Name:              fi.String("name"),
+				Network:           &Network{ID: fi.String("networkID")},
+				SecurityGroups: []*SecurityGroup{
+					{ID: fi.String("sg-1"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("sg-2"), Lifecycle: fi.LifecycleSync},
+				},
+				Subnets: []*Subnet{
+					{ID: fi.String("subnet-a"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("subnet-b"), Lifecycle: fi.LifecycleSync},
+				},
+				Tags: []string{
+					"cluster",
+					"KopsInstanceGroup=node-ig",
+				},
 			},
 			expectedError: nil,
 		},
@@ -187,19 +323,18 @@ func Test_NewPortTaskFromCloud(t *testing.T) {
 				Name:    fi.String("name"),
 				Network: &Network{ID: fi.String("networkID")},
 				SecurityGroups: []*SecurityGroup{
-					{ID: fi.String("sg-1"), Lifecycle: &syncLifecycle},
-					{ID: fi.String("sg-2"), Lifecycle: &syncLifecycle},
+					{ID: fi.String("sg-1"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("sg-2"), Lifecycle: fi.LifecycleSync},
 				},
 				AdditionalSecurityGroups: []string{
 					"add-1",
 					"add-2",
 				},
 				Subnets: []*Subnet{
-					{ID: fi.String("subnet-a"), Lifecycle: &syncLifecycle},
-					{ID: fi.String("subnet-b"), Lifecycle: &syncLifecycle},
+					{ID: fi.String("subnet-a"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("subnet-b"), Lifecycle: fi.LifecycleSync},
 				},
-				Lifecycle: &syncLifecycle,
-				Tag:       fi.String(""),
+				Lifecycle: fi.LifecycleSync,
 			},
 			expectedError: nil,
 		},
@@ -207,11 +342,9 @@ func Test_NewPortTaskFromCloud(t *testing.T) {
 
 	for _, testCase := range tests {
 		t.Run(testCase.desc, func(t *testing.T) {
-			actual, err := NewPortTaskFromCloud(testCase.cloud, &testCase.lifecycle, testCase.cloudPort, testCase.foundPort)
+			actual, err := newPortTaskFromCloud(testCase.cloud, testCase.lifecycle, testCase.cloudPort, testCase.foundPort)
 
-			if !reflect.DeepEqual(err, testCase.expectedError) {
-				t.Errorf("Error differs:\n%v\n\tinstead of\n%v", err, testCase.expectedError)
-			}
+			compareErrors(t, err, testCase.expectedError)
 
 			if !reflect.DeepEqual(actual, testCase.expectedPortTask) {
 				t.Errorf("Port task differs:\n%v\n\tinstead of\n%v", actual, testCase.expectedPortTask)
@@ -225,7 +358,6 @@ func Test_NewPortTaskFromCloud(t *testing.T) {
 }
 
 func Test_Port_Find(t *testing.T) {
-	syncLifecycle := fi.LifecycleSync
 	tests := []struct {
 		desc             string
 		context          *fi.Context
@@ -236,18 +368,28 @@ func Test_Port_Find(t *testing.T) {
 		{
 			desc: "nothing found",
 			context: &fi.Context{
+				Cluster: &kops.Cluster{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "clusterName",
+					},
+				},
 				Cloud: &portCloud{},
 			},
 			port: &Port{
 				Name:      fi.String("name"),
-				Lifecycle: &syncLifecycle,
+				Lifecycle: fi.LifecycleSync,
 			},
 			expectedPortTask: nil,
 			expectedError:    nil,
 		},
 		{
-			desc: "port found",
+			desc: "port found no tags",
 			context: &fi.Context{
+				Cluster: &kops.Cluster{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "clusterName",
+					},
+				},
 				Cloud: &portCloud{
 					listPorts: []ports.Port{
 						{
@@ -262,50 +404,106 @@ func Test_Port_Find(t *testing.T) {
 								"sg-1",
 								"sg-2",
 							},
+							Tags: []string{"clusterName"},
 						},
 					},
 				},
 			},
 			port: &Port{
 				Name:      fi.String("name"),
-				Lifecycle: &syncLifecycle,
+				Lifecycle: fi.LifecycleSync,
 			},
 			expectedPortTask: &Port{
 				ID:      fi.String("id"),
 				Name:    fi.String("name"),
 				Network: &Network{ID: fi.String("networkID")},
 				SecurityGroups: []*SecurityGroup{
-					{ID: fi.String("sg-1"), Lifecycle: &syncLifecycle},
-					{ID: fi.String("sg-2"), Lifecycle: &syncLifecycle},
+					{ID: fi.String("sg-1"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("sg-2"), Lifecycle: fi.LifecycleSync},
 				},
 				Subnets: []*Subnet{
-					{ID: fi.String("subnet-a"), Lifecycle: &syncLifecycle},
-					{ID: fi.String("subnet-b"), Lifecycle: &syncLifecycle},
+					{ID: fi.String("subnet-a"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("subnet-b"), Lifecycle: fi.LifecycleSync},
 				},
-				Tag:       fi.String(""),
-				Lifecycle: &syncLifecycle,
+				Lifecycle: fi.LifecycleSync,
 			},
 			expectedError: nil,
 		},
 		{
-			desc: "multiple ports found",
+			desc: "port found with tags",
 			context: &fi.Context{
+				Cluster: &kops.Cluster{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "clusterName",
+					},
+				},
 				Cloud: &portCloud{
 					listPorts: []ports.Port{
 						{
-							ID:   "id-1",
-							Name: "name",
-						},
-						{
-							ID:   "id-2",
-							Name: "name",
+							ID:        "id",
+							Name:      "name",
+							NetworkID: "networkID",
+							FixedIPs: []ports.IP{
+								{SubnetID: "subnet-a"},
+								{SubnetID: "subnet-b"},
+							},
+							SecurityGroups: []string{
+								"sg-1",
+								"sg-2",
+							},
+							Tags: []string{"clusterName"},
 						},
 					},
 				},
 			},
 			port: &Port{
 				Name:      fi.String("name"),
-				Lifecycle: &syncLifecycle,
+				Lifecycle: fi.LifecycleSync,
+				Tags:      []string{"clusterName"},
+			},
+			expectedPortTask: &Port{
+				ID:      fi.String("id"),
+				Name:    fi.String("name"),
+				Network: &Network{ID: fi.String("networkID")},
+				SecurityGroups: []*SecurityGroup{
+					{ID: fi.String("sg-1"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("sg-2"), Lifecycle: fi.LifecycleSync},
+				},
+				Subnets: []*Subnet{
+					{ID: fi.String("subnet-a"), Lifecycle: fi.LifecycleSync},
+					{ID: fi.String("subnet-b"), Lifecycle: fi.LifecycleSync},
+				},
+				Lifecycle: fi.LifecycleSync,
+				Tags:      []string{"clusterName"},
+			},
+			expectedError: nil,
+		},
+		{
+			desc: "multiple ports found",
+			context: &fi.Context{
+				Cluster: &kops.Cluster{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "clusterName",
+					},
+				},
+				Cloud: &portCloud{
+					listPorts: []ports.Port{
+						{
+							ID:   "id-1",
+							Name: "name",
+							Tags: []string{"clusterName"},
+						},
+						{
+							ID:   "id-2",
+							Name: "name",
+							Tags: []string{"clusterName"},
+						},
+					},
+				},
+			},
+			port: &Port{
+				Name:      fi.String("name"),
+				Lifecycle: fi.LifecycleSync,
 			},
 			expectedPortTask: nil,
 			expectedError:    fmt.Errorf("found multiple ports with name: name"),
@@ -313,6 +511,11 @@ func Test_Port_Find(t *testing.T) {
 		{
 			desc: "error listing ports",
 			context: &fi.Context{
+				Cluster: &kops.Cluster{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "clusterName",
+					},
+				},
 				Cloud: &portCloud{
 					listPorts: []ports.Port{
 						{
@@ -325,7 +528,7 @@ func Test_Port_Find(t *testing.T) {
 			},
 			port: &Port{
 				Name:      fi.String("name"),
-				Lifecycle: &syncLifecycle,
+				Lifecycle: fi.LifecycleSync,
 			},
 			expectedPortTask: nil,
 			expectedError:    fmt.Errorf("list error"),
@@ -336,9 +539,7 @@ func Test_Port_Find(t *testing.T) {
 		t.Run(testCase.desc, func(t *testing.T) {
 			actual, err := testCase.port.Find(testCase.context)
 
-			if !reflect.DeepEqual(err, testCase.expectedError) {
-				t.Errorf("Error differs:\n%v\n\tinstead of\n%v", err, testCase.expectedError)
-			}
+			compareErrors(t, err, testCase.expectedError)
 
 			if !reflect.DeepEqual(actual, testCase.expectedPortTask) {
 				t.Errorf("Port task differs:\n%v\n\tinstead of\n%v", actual, testCase.expectedPortTask)
@@ -453,9 +654,7 @@ func Test_Port_CheckChanges(t *testing.T) {
 			var port Port
 			err := (&port).CheckChanges(testCase.actual, testCase.expected, testCase.changes)
 
-			if !reflect.DeepEqual(err, testCase.expectedError) {
-				t.Errorf("Error differs:\n%v\n\tinstead of\n%v", err, testCase.expectedError)
-			}
+			compareErrors(t, err, testCase.expectedError)
 		})
 	}
 }
@@ -580,9 +779,7 @@ func Test_Port_RenderOpenstack(t *testing.T) {
 			var port Port
 			err := (&port).RenderOpenstack(testCase.target, testCase.actual, testCase.expected, testCase.changes)
 
-			if !reflect.DeepEqual(err, testCase.expectedError) {
-				t.Errorf("Error differs:\n%v\n\tinstead of\n%v", err, testCase.expectedError)
-			}
+			compareErrors(t, err, testCase.expectedError)
 
 			if !reflect.DeepEqual(testCase.expected, testCase.expectedAfter) {
 				t.Errorf("Expected Port task differs:\n%v\n\tinstead of\n%v", testCase.expected, testCase.expectedAfter)
@@ -594,6 +791,7 @@ func Test_Port_RenderOpenstack(t *testing.T) {
 func Test_Port_createOptsFromPortTask(t *testing.T) {
 	tests := []struct {
 		desc               string
+		target             *openstack.OpenstackAPITarget
 		actual             *Port
 		expected           *Port
 		changes            *Port
@@ -602,6 +800,18 @@ func Test_Port_createOptsFromPortTask(t *testing.T) {
 	}{
 		{
 			desc: "all fields set",
+			target: &openstack.OpenstackAPITarget{
+				Cloud: &portCloud{
+					listSecurityGroups: map[string][]sg.SecGroup{
+						"add-1": {
+							{ID: "add-1-id", Name: "add-1"},
+						},
+						"add-2": {
+							{ID: "add-2-id", Name: "add-2"},
+						},
+					},
+				},
+			},
 			expected: &Port{
 				ID:      fi.String("expected-id"),
 				Name:    fi.String("name"),
@@ -625,8 +835,8 @@ func Test_Port_createOptsFromPortTask(t *testing.T) {
 				SecurityGroups: &[]string{
 					"sg-1",
 					"sg-2",
-					"add-1",
-					"add-2",
+					"add-1-id",
+					"add-2-id",
 				},
 				FixedIPs: []ports.IP{
 					{SubnetID: "subnet-a"},
@@ -634,15 +844,42 @@ func Test_Port_createOptsFromPortTask(t *testing.T) {
 				},
 			},
 		},
+		{
+			desc: "nonexisting additional security groups",
+			target: &openstack.OpenstackAPITarget{
+				Cloud: &portCloud{
+					listSecurityGroups: map[string][]sg.SecGroup{
+						"add-1": {
+							{ID: "add-1-id", Name: "add-1"},
+						},
+					},
+				},
+			},
+			expected: &Port{
+				ID:      fi.String("expected-id"),
+				Name:    fi.String("name"),
+				Network: &Network{ID: fi.String("networkID")},
+				SecurityGroups: []*SecurityGroup{
+					{ID: fi.String("sg-1")},
+					{ID: fi.String("sg-2")},
+				},
+				AdditionalSecurityGroups: []string{
+					"add-2",
+				},
+				Subnets: []*Subnet{
+					{ID: fi.String("subnet-a")},
+					{ID: fi.String("subnet-b")},
+				},
+			},
+			expectedError: fmt.Errorf("Additional SecurityGroup not found for name add-2"),
+		},
 	}
 
 	for _, testCase := range tests {
 		t.Run(testCase.desc, func(t *testing.T) {
-			opts, err := portCreateOptsFromPortTask(testCase.actual, testCase.expected, testCase.changes)
+			opts, err := portCreateOptsFromPortTask(testCase.target, testCase.actual, testCase.expected, testCase.changes)
 
-			if !reflect.DeepEqual(err, testCase.expectedError) {
-				t.Errorf("Error differs:\n%v\n\tinstead of\n%v", err, testCase.expectedError)
-			}
+			compareErrors(t, err, testCase.expectedError)
 
 			if !reflect.DeepEqual(testCase.expectedCreateOpts, opts) {
 				t.Errorf("Port create opts differs:\n%v\n\tinstead of\n%v", opts, testCase.expectedCreateOpts)
@@ -678,3 +915,35 @@ type sortedTasks []fi.Task
 func (s sortedTasks) Len() int           { return len(s) }
 func (s sortedTasks) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s sortedTasks) Less(i, j int) bool { return fmt.Sprintf("%v", s[i]) < fmt.Sprintf("%v", s[j]) }
+
+func compareErrors(t *testing.T, actual, expected error) {
+	t.Helper()
+	if pointersAreBothNil(t, "errors", actual, expected) {
+		return
+	}
+	a := fmt.Sprintf("%v", actual)
+	e := fmt.Sprintf("%v", expected)
+	if a != e {
+		t.Errorf("error differs: %+v instead of %+v", actual, expected)
+	}
+}
+
+func pointersAreBothNil(t *testing.T, name string, actual, expected interface{}) bool {
+	t.Helper()
+	if actual == nil && expected == nil {
+		return true
+	}
+	if !reflect.ValueOf(actual).IsValid() {
+		return false
+	}
+	if reflect.ValueOf(actual).IsNil() && reflect.ValueOf(expected).IsNil() {
+		return true
+	}
+	if actual == nil && expected != nil {
+		t.Fatalf("%s differ: actual is nil, expected is not", name)
+	}
+	if actual != nil && expected == nil {
+		t.Fatalf("%s differ: expected is nil, actual is not", name)
+	}
+	return false
+}

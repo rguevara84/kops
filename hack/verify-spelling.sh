@@ -1,3 +1,5 @@
+#!/usr/bin/env bash
+
 # Copyright 2019 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,21 +14,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-#!/bin/bash
+set -o errexit
+set -o nounset
+set -o pipefail
 
-set -e
+. "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
-cd "${REPO_ROOT}"
+cd "${KOPS_ROOT}/hack"
 
-OUTPUT_GOBIN="${REPO_ROOT}/_output/bin"
-GOBIN="${OUTPUT_GOBIN}" go install ./vendor/github.com/client9/misspell/cmd/misspell
+go build -o "${TOOLS_BIN}/misspell" github.com/client9/misspell/cmd/misspell
+
+cd "${KOPS_ROOT}"
 
 mkdir -p .build/docs
+
+# Spell checking
+# shellcheck disable=SC2038
 find . -type f \( -name "*.go*" -o -name "*.md*" \) -a -path "./docs/releases/*" -exec basename {} \; | \
-	xargs -I{} sh -c 'sed -e "/^\* .*github.com\/kubernetes\/kops\/pull/d" docs/releases/{} > .build/docs/$(basename {})'
+	xargs -I{} sh -c "sed -e \"/^\* .*github.com\/kubernetes\/kops\/pull/d\" docs/releases/{} > .build/docs/$(basename {})"
 find . -type f \( -name "*.go*" -o -name "*.md*" \) -a \( -not -path "./vendor/*" -not -path "./docs/releases/*" \) | \
   sed -e /README-ES.md/d -e /node_modules/d |
-		xargs ${OUTPUT_GOBIN}/misspell -error
+		xargs "${TOOLS_BIN}/misspell" -error
 
 

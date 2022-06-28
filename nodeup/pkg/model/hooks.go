@@ -26,7 +26,7 @@ import (
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/nodeup/nodetasks"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // HookBuilder configures the hooks
@@ -40,13 +40,9 @@ var _ fi.ModelBuilder = &HookBuilder{}
 func (h *HookBuilder) Build(c *fi.ModelBuilderContext) error {
 	// we keep a list of hooks name so we can allow local instanceGroup hooks override the cluster ones
 	hookNames := make(map[string]bool)
-	for i, spec := range []*[]kops.HookSpec{&h.InstanceGroup.Spec.Hooks, &h.Cluster.Spec.Hooks} {
-		for j, hook := range *spec {
+	for i, spec := range h.NodeupConfig.Hooks {
+		for j, hook := range spec {
 			isInstanceGroup := i == 0
-			// filter roles if required
-			if len(hook.Roles) > 0 && !containsRole(h.InstanceGroup.Spec.Role, hook.Roles) {
-				continue
-			}
 
 			// I don't want to affect those whom are already using the hooks, so I'm going to try to keep the name for now
 			// i.e. use the default naming convention - kops-hook-<index>, only those using the Name or hooks in IG should alter
@@ -68,7 +64,7 @@ func (h *HookBuilder) Build(c *fi.ModelBuilderContext) error {
 			hookNames[name] = true
 
 			// are we disabling the service?
-			if hook.Disabled {
+			if hook.Enabled != nil && !*hook.Enabled {
 				enabled := false
 				managed := true
 				c.AddTask(&nodetasks.Service{
@@ -128,8 +124,17 @@ func (h *HookBuilder) buildSystemdService(name string, hook *kops.HookSpec) (*no
 		case nil:
 			unit.SetSection("Service", hook.Manifest)
 		default:
-			if err := h.buildDockerService(unit, hook); err != nil {
-				return nil, err
+			switch h.Cluster.Spec.ContainerRuntime {
+			case "containerd":
+				if err := h.buildContainerdService(unit, hook, name); err != nil {
+					return nil, err
+				}
+			case "docker":
+				if err := h.buildDockerService(unit, hook); err != nil {
+					return nil, err
+				}
+			default:
+				return nil, fmt.Errorf("unknown container runtime %q", h.Cluster.Spec.ContainerRuntime)
 			}
 		}
 		definition = s(unit.Render())
@@ -145,6 +150,41 @@ func (h *HookBuilder) buildSystemdService(name string, hook *kops.HookSpec) (*no
 	return service, nil
 }
 
+// buildContainerdService is responsible for generating a containerd exec unit file
+func (h *HookBuilder) buildContainerdService(unit *systemd.Manifest, hook *kops.HookSpec, name string) error {
+	containerdImage := hook.ExecContainer.Image
+	if !strings.Contains(containerdImage, "/") {
+		containerdImage = "docker.io/library/" + containerdImage
+	}
+	if !strings.Contains(containerdImage, ":") {
+		containerdImage = containerdImage + ":latest"
+	}
+
+	containerdArgs := []string{
+		"/usr/bin/ctr", "--namespace", "k8s.io", "run", "--rm",
+		"--mount", "type=bind,src=/,dst=/rootfs,options=rbind:rslave",
+		"--mount", "type=bind,src=/var/run/dbus,dst=/var/run/dbus,options=rbind:rprivate",
+		"--mount", "type=bind,src=/run/systemd,dst=/run/systemd,options=rbind:rprivate",
+		"--net-host",
+		"--privileged",
+	}
+	containerdArgs = append(containerdArgs, buildContainerRuntimeEnvironmentVars(hook.ExecContainer.Environment)...)
+	containerdArgs = append(containerdArgs, containerdImage)
+	containerdArgs = append(containerdArgs, name)
+	containerdArgs = append(containerdArgs, hook.ExecContainer.Command...)
+
+	containerdRunCommand := systemd.EscapeCommand(containerdArgs)
+	containerdPullCommand := systemd.EscapeCommand([]string{"/usr/bin/ctr", "--namespace", "k8s.io", "image", "pull", containerdImage})
+
+	unit.Set("Unit", "Requires", "containerd.service")
+	unit.Set("Service", "ExecStartPre", containerdPullCommand)
+	unit.Set("Service", "ExecStart", containerdRunCommand)
+	unit.Set("Service", "Type", "oneshot")
+	unit.Set("Install", "WantedBy", "multi-user.target")
+
+	return nil
+}
+
 // buildDockerService is responsible for generating a docker exec unit file
 func (h *HookBuilder) buildDockerService(unit *systemd.Manifest, hook *kops.HookSpec) error {
 	dockerArgs := []string{
@@ -155,7 +195,7 @@ func (h *HookBuilder) buildDockerService(unit *systemd.Manifest, hook *kops.Hook
 		"--net=host",
 		"--privileged",
 	}
-	dockerArgs = append(dockerArgs, buildDockerEnvironmentVars(hook.ExecContainer.Environment)...)
+	dockerArgs = append(dockerArgs, buildContainerRuntimeEnvironmentVars(hook.ExecContainer.Environment)...)
 	dockerArgs = append(dockerArgs, hook.ExecContainer.Image)
 	dockerArgs = append(dockerArgs, hook.ExecContainer.Command...)
 

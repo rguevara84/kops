@@ -26,13 +26,15 @@ import (
 // NetworkModelBuilder configures network objects
 type NetworkModelBuilder struct {
 	*OpenstackModelContext
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 }
 
 var _ fi.ModelBuilder = &NetworkModelBuilder{}
 
 func (b *NetworkModelBuilder) Build(c *fi.ModelBuilderContext) error {
 	clusterName := b.ClusterName()
+
+	osSpec := b.Cluster.Spec.CloudProvider.Openstack
 
 	netName, err := b.GetNetworkName()
 	if err != nil {
@@ -45,11 +47,17 @@ func (b *NetworkModelBuilder) Build(c *fi.ModelBuilderContext) error {
 			Tag:       s(clusterName),
 			Lifecycle: b.Lifecycle,
 		}
-
+		if osSpec.Network != nil {
+			t.AvailabilityZoneHints = osSpec.Network.AvailabilityZoneHints
+		}
 		c.AddTask(t)
 	}
 
 	needRouter := true
+	// Do not need router if there is no external network
+	if osSpec.Router == nil || osSpec.Router.ExternalNetwork == nil {
+		needRouter = false
+	}
 	routerName := strings.Replace(clusterName, ".", "-", -1)
 	for _, sp := range b.Cluster.Spec.Subnets {
 		// assumes that we do not need to create routers if we use existing subnets
@@ -68,8 +76,8 @@ func (b *NetworkModelBuilder) Build(c *fi.ModelBuilderContext) error {
 			Lifecycle:  b.Lifecycle,
 			Tag:        s(clusterName),
 		}
-		if b.Cluster.Spec.CloudConfig.Openstack.Router != nil && b.Cluster.Spec.CloudConfig.Openstack.Router.DNSServers != nil {
-			dnsSplitted := strings.Split(fi.StringValue(b.Cluster.Spec.CloudConfig.Openstack.Router.DNSServers), ",")
+		if osSpec.Router != nil && osSpec.Router.DNSServers != nil {
+			dnsSplitted := strings.Split(fi.StringValue(osSpec.Router.DNSServers), ",")
 			dnsNameSrv := make([]*string, len(dnsSplitted))
 			for i, ns := range dnsSplitted {
 				dnsNameSrv[i] = fi.String(ns)
@@ -93,6 +101,9 @@ func (b *NetworkModelBuilder) Build(c *fi.ModelBuilderContext) error {
 		t := &openstacktasks.Router{
 			Name:      s(routerName),
 			Lifecycle: b.Lifecycle,
+		}
+		if osSpec.Router != nil {
+			t.AvailabilityZoneHints = osSpec.Router.AvailabilityZoneHints
 		}
 
 		c.AddTask(t)

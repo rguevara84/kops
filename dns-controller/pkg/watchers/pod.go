@@ -17,17 +17,16 @@ limitations under the License.
 package watchers
 
 import (
+	"context"
 	"fmt"
-	"time"
-
-	"k8s.io/klog"
-
 	"strings"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/dns-controller/pkg/dns"
 	"k8s.io/kops/dns-controller/pkg/util"
 )
@@ -68,12 +67,14 @@ func (c *PodController) Run() {
 
 func (c *PodController) runWatcher(stopCh <-chan struct{}) {
 	runOnce := func() (bool, error) {
+		ctx := context.TODO()
+
 		var listOpts metav1.ListOptions
 		klog.V(4).Infof("querying without label filter")
 
 		allKeys := c.scope.AllKeys()
 
-		podList, err := c.client.CoreV1().Pods(c.namespace).List(listOpts)
+		podList, err := c.client.CoreV1().Pods(c.namespace).List(ctx, listOpts)
 		if err != nil {
 			return false, fmt.Errorf("error listing pods: %v", err)
 		}
@@ -95,7 +96,7 @@ func (c *PodController) runWatcher(stopCh <-chan struct{}) {
 
 		listOpts.Watch = true
 		listOpts.ResourceVersion = podList.ResourceVersion
-		watcher, err := c.client.CoreV1().Pods(c.namespace).Watch(listOpts)
+		watcher, err := c.client.CoreV1().Pods(c.namespace).Watch(ctx, listOpts)
 		if err != nil {
 			return false, fmt.Errorf("error watching pods: %v", err)
 		}
@@ -175,10 +176,10 @@ func (c *PodController) updatePodRecords(pod *v1.Pod) string {
 
 	specInternal := pod.Annotations[AnnotationNameDNSInternal]
 	if specInternal != "" {
-		var ips []string
+		var aliases []string
 		if pod.Spec.HostNetwork {
-			if pod.Status.PodIP != "" {
-				ips = append(ips, pod.Status.PodIP)
+			if pod.Spec.NodeName != "" {
+				aliases = append(aliases, "node/"+pod.Spec.NodeName+"/internal")
 			}
 		} else {
 			klog.V(4).Infof("Pod %q had %s=%s, but was not HostNetwork", pod.Name, AnnotationNameDNSInternal, specInternal)
@@ -189,11 +190,11 @@ func (c *PodController) updatePodRecords(pod *v1.Pod) string {
 			token = strings.TrimSpace(token)
 
 			fqdn := dns.EnsureDotSuffix(token)
-			for _, ip := range ips {
+			for _, alias := range aliases {
 				records = append(records, dns.Record{
-					RecordType: dns.RecordTypeA,
+					RecordType: dns.RecordTypeAlias,
 					FQDN:       fqdn,
-					Value:      ip,
+					Value:      alias,
 				})
 			}
 		}

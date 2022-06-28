@@ -23,26 +23,33 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 func (m *MockEC2) DescribeImageAttributeRequest(*ec2.DescribeImageAttributeInput) (*request.Request, *ec2.DescribeImageAttributeOutput) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeImageAttributeWithContext(aws.Context, *ec2.DescribeImageAttributeInput, ...request.Option) (*ec2.DescribeImageAttributeOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeImageAttribute(*ec2.DescribeImageAttributeInput) (*ec2.DescribeImageAttributeOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeImagesRequest(*ec2.DescribeImagesInput) (*request.Request, *ec2.DescribeImagesOutput) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeImagesWithContext(aws.Context, *ec2.DescribeImagesInput, ...request.Option) (*ec2.DescribeImagesOutput, error) {
 	panic("Not implemented")
 }
 
 func (m *MockEC2) DescribeImages(request *ec2.DescribeImagesInput) (*ec2.DescribeImagesOutput, error) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
 	klog.Infof("DescribeImages: %v", request)
 
 	var images []*ec2.Image
@@ -67,12 +74,15 @@ func (m *MockEC2) DescribeImages(request *ec2.DescribeImagesInput) (*ec2.Describ
 
 	return response, nil
 }
+
 func (m *MockEC2) DescribeImportImageTasksRequest(*ec2.DescribeImportImageTasksInput) (*request.Request, *ec2.DescribeImportImageTasksOutput) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeImportImageTasksWithContext(aws.Context, *ec2.DescribeImportImageTasksInput, ...request.Option) (*ec2.DescribeImportImageTasksOutput, error) {
 	panic("Not implemented")
 }
+
 func (m *MockEC2) DescribeImportImageTasks(*ec2.DescribeImportImageTasksInput) (*ec2.DescribeImportImageTasksOutput, error) {
 	panic("Not implemented")
 }

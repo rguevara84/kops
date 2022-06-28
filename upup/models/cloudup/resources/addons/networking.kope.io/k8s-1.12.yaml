@@ -5,17 +5,14 @@ metadata:
   namespace: kube-system
   labels:
     k8s-addon: networking.kope.io
-    role.kubernetes.io/networking: "1"
 spec:
   selector:
     matchLabels:
       name: kopeio-networking-agent
-      role.kubernetes.io/networking: "1"
   template:
     metadata:
       labels:
         name: kopeio-networking-agent
-        role.kubernetes.io/networking: "1"
       annotations:
         scheduler.alpha.kubernetes.io/critical-pod: ''
         scheduler.alpha.kubernetes.io/tolerations: '[{"key":"CriticalAddonsOnly", "operator":"Exists"}]'
@@ -44,6 +41,7 @@ spec:
               fieldRef:
                 fieldPath: spec.nodeName
       serviceAccountName: kopeio-networking-agent
+      priorityClassName: system-node-critical
       tolerations:
       - effect: NoSchedule
         operator: Exists
@@ -63,11 +61,10 @@ metadata:
   namespace: kube-system
   labels:
     k8s-addon: networking.kope.io
-    role.kubernetes.io/networking: "1"
 
 ---
 
-apiVersion: rbac.authorization.k8s.io/v1beta1
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
@@ -92,7 +89,7 @@ rules:
 
 ---
 
-apiVersion: rbac.authorization.k8s.io/v1beta1
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   labels:

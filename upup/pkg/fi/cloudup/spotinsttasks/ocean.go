@@ -24,49 +24,56 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/klog/v2"
+
 	"github.com/spotinst/spotinst-sdk-go/service/ocean/providers/aws"
 	"github.com/spotinst/spotinst-sdk-go/spotinst/client"
 	"github.com/spotinst/spotinst-sdk-go/spotinst/util/stringutil"
-	"k8s.io/klog"
 	"k8s.io/kops/pkg/resources/spotinst"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awstasks"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=Ocean
+// +kops:fitask
 type Ocean struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	ID                       *string
 	MinSize                  *int64
 	MaxSize                  *int64
-	SpotPercentage           *float64
 	UtilizeReservedInstances *bool
+	UtilizeCommitments       *bool
 	FallbackToOnDemand       *bool
-	InstanceTypes            []string
+	DrainingTimeout          *int64
+	GracePeriod              *int64
+	InstanceTypesWhitelist   []string
+	InstanceTypesBlacklist   []string
 	Tags                     map[string]string
-	UserData                 *fi.ResourceHolder
+	UserData                 fi.Resource
 	ImageID                  *string
 	IAMInstanceProfile       *awstasks.IAMInstanceProfile
 	SSHKey                   *awstasks.SSHKey
 	Subnets                  []*awstasks.Subnet
 	SecurityGroups           []*awstasks.SecurityGroup
 	Monitoring               *bool
-	AssociatePublicIP        *bool
+	AssociatePublicIPAddress *bool
+	UseAsTemplateOnly        *bool
 	RootVolumeOpts           *RootVolumeOpts
 	AutoScalerOpts           *AutoScalerOpts
 }
 
-var _ fi.CompareWithID = &Ocean{}
+var (
+	_ fi.Task            = &Ocean{}
+	_ fi.CompareWithID   = &Ocean{}
+	_ fi.HasDependencies = &Ocean{}
+)
 
 func (o *Ocean) CompareWithID() *string {
 	return o.Name
 }
-
-var _ fi.HasDependencies = &Ocean{}
 
 func (o *Ocean) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 	var deps []fi.Task
@@ -91,29 +98,33 @@ func (o *Ocean) GetDependencies(tasks map[string]fi.Task) []fi.Task {
 		}
 	}
 
+	if o.UserData != nil {
+		deps = append(deps, fi.FindDependencies(tasks, o.UserData)...)
+	}
+
 	return deps
 }
 
-func (o *Ocean) find(svc spotinst.InstanceGroupService, name string) (*aws.Cluster, error) {
-	klog.V(4).Infof("Attempting to find Ocean: %q", name)
+func (o *Ocean) find(svc spotinst.InstanceGroupService) (*aws.Cluster, error) {
+	klog.V(4).Infof("Attempting to find Ocean: %q", fi.StringValue(o.Name))
 
 	oceans, err := svc.List(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("spotinst: failed to find ocean %q: %v", name, err)
+		return nil, fmt.Errorf("spotinst: failed to find ocean %q: %v", fi.StringValue(o.Name), err)
 	}
 
 	var out *aws.Cluster
 	for _, ocean := range oceans {
-		if ocean.Name() == name {
+		if ocean.Name() == fi.StringValue(o.Name) {
 			out = ocean.Obj().(*aws.Cluster)
 			break
 		}
 	}
 	if out == nil {
-		return nil, fmt.Errorf("spotinst: failed to find ocean %q", name)
+		return nil, fmt.Errorf("spotinst: failed to find ocean %q", fi.StringValue(o.Name))
 	}
 
-	klog.V(4).Infof("Ocean/%s: %s", name, stringutil.Stringify(out))
+	klog.V(4).Infof("Ocean/%s: %s", fi.StringValue(o.Name), stringutil.Stringify(out))
 	return out, nil
 }
 
@@ -122,27 +133,36 @@ var _ fi.HasCheckExisting = &Ocean{}
 func (o *Ocean) Find(c *fi.Context) (*Ocean, error) {
 	cloud := c.Cloud.(awsup.AWSCloud)
 
-	ocean, err := o.find(cloud.Spotinst().Ocean(), *o.Name)
+	ocean, err := o.find(cloud.Spotinst().Ocean())
 	if err != nil {
 		return nil, err
 	}
 
 	actual := &Ocean{}
-	actual.ID = ocean.ID
 	actual.Name = ocean.Name
 
 	// Capacity.
 	{
-		actual.MinSize = fi.Int64(int64(fi.IntValue(ocean.Capacity.Minimum)))
-		actual.MaxSize = fi.Int64(int64(fi.IntValue(ocean.Capacity.Maximum)))
+		if !fi.BoolValue(ocean.Compute.LaunchSpecification.UseAsTemplateOnly) {
+			actual.MinSize = fi.Int64(int64(fi.IntValue(ocean.Capacity.Minimum)))
+			actual.MaxSize = fi.Int64(int64(fi.IntValue(ocean.Capacity.Maximum)))
+		}
 	}
 
 	// Strategy.
 	{
 		if strategy := ocean.Strategy; strategy != nil {
-			actual.SpotPercentage = strategy.SpotPercentage
 			actual.FallbackToOnDemand = strategy.FallbackToOnDemand
 			actual.UtilizeReservedInstances = strategy.UtilizeReservedInstances
+			actual.UtilizeCommitments = strategy.UtilizeCommitments
+
+			if strategy.DrainingTimeout != nil {
+				actual.DrainingTimeout = fi.Int64(int64(fi.IntValue(strategy.DrainingTimeout)))
+			}
+
+			if strategy.GracePeriod != nil {
+				actual.GracePeriod = fi.Int64(int64(fi.IntValue(strategy.GracePeriod)))
+			}
 		}
 	}
 
@@ -166,8 +186,14 @@ func (o *Ocean) Find(c *fi.Context) (*Ocean, error) {
 		// Instance types.
 		{
 			if itypes := compute.InstanceTypes; itypes != nil {
-				if itypes.Whitelist != nil && len(itypes.Whitelist) > 0 {
-					actual.InstanceTypes = itypes.Whitelist
+				// Whitelist.
+				if len(itypes.Whitelist) > 0 {
+					actual.InstanceTypesWhitelist = itypes.Whitelist
+				}
+
+				// Blacklist.
+				if len(itypes.Blacklist) > 0 {
+					actual.InstanceTypesBlacklist = itypes.Blacklist
 				}
 			}
 		}
@@ -220,17 +246,16 @@ func (o *Ocean) Find(c *fi.Context) (*Ocean, error) {
 				if err != nil {
 					return nil, err
 				}
-				actual.UserData = fi.WrapResource(fi.NewStringResource(string(userData)))
+				actual.UserData = fi.NewStringResource(string(userData))
 			}
 		}
 
 		// EBS optimization.
 		{
-			if lc.EBSOptimized != nil {
+			if fi.BoolValue(lc.EBSOptimized) {
 				if actual.RootVolumeOpts == nil {
 					actual.RootVolumeOpts = new(RootVolumeOpts)
 				}
-
 				actual.RootVolumeOpts.Optimization = lc.EBSOptimized
 			}
 		}
@@ -247,18 +272,23 @@ func (o *Ocean) Find(c *fi.Context) (*Ocean, error) {
 
 		// Public IP.
 		if lc.AssociatePublicIPAddress != nil {
-			actual.AssociatePublicIP = lc.AssociatePublicIPAddress
+			actual.AssociatePublicIPAddress = lc.AssociatePublicIPAddress
 		}
 
 		// Root volume options.
 		if lc.RootVolumeSize != nil {
 			actual.RootVolumeOpts = new(RootVolumeOpts)
-			actual.RootVolumeOpts.Size = fi.Int32(int32(*lc.RootVolumeSize))
+			actual.RootVolumeOpts.Size = fi.Int64(int64(*lc.RootVolumeSize))
 		}
 
 		// Monitoring.
 		if lc.Monitoring != nil {
 			actual.Monitoring = lc.Monitoring
+		}
+
+		// Template.
+		if lc.UseAsTemplateOnly != nil {
+			actual.UseAsTemplateOnly = lc.UseAsTemplateOnly
 		}
 	}
 
@@ -268,14 +298,23 @@ func (o *Ocean) Find(c *fi.Context) (*Ocean, error) {
 			actual.AutoScalerOpts = new(AutoScalerOpts)
 			actual.AutoScalerOpts.ClusterID = ocean.ControllerClusterID
 			actual.AutoScalerOpts.Enabled = ocean.AutoScaler.IsEnabled
+			actual.AutoScalerOpts.AutoConfig = ocean.AutoScaler.IsAutoConfig
+			actual.AutoScalerOpts.AutoHeadroomPercentage = ocean.AutoScaler.AutoHeadroomPercentage
+			actual.AutoScalerOpts.Cooldown = ocean.AutoScaler.Cooldown
 
-			// Headroom.
-			if headroom := ocean.AutoScaler.Headroom; headroom != nil {
-				actual.AutoScalerOpts.Headroom = &AutoScalerHeadroomOpts{
-					CPUPerUnit: headroom.CPUPerUnit,
-					GPUPerUnit: headroom.GPUPerUnit,
-					MemPerUnit: headroom.MemoryPerUnit,
-					NumOfUnits: headroom.NumOfUnits,
+			// Scale down.
+			if down := ocean.AutoScaler.Down; down != nil {
+				actual.AutoScalerOpts.Down = &AutoScalerDownOpts{
+					MaxPercentage:     down.MaxScaleDownPercentage,
+					EvaluationPeriods: down.EvaluationPeriods,
+				}
+			}
+
+			// Resource limits.
+			if limits := ocean.AutoScaler.ResourceLimits; limits != nil {
+				actual.AutoScalerOpts.ResourceLimits = &AutoScalerResourceLimitsOpts{
+					MaxVCPU:   limits.MaxVCPU,
+					MaxMemory: limits.MaxMemoryGiB,
 				}
 			}
 		}
@@ -289,7 +328,7 @@ func (o *Ocean) Find(c *fi.Context) (*Ocean, error) {
 
 func (o *Ocean) CheckExisting(c *fi.Context) bool {
 	cloud := c.Cloud.(awsup.AWSCloud)
-	ocean, err := o.find(cloud.Spotinst().Ocean(), *o.Name)
+	ocean, err := o.find(cloud.Spotinst().Ocean())
 	return err == nil && ocean != nil
 }
 
@@ -305,7 +344,7 @@ func (s *Ocean) CheckChanges(a, e, changes *Ocean) error {
 }
 
 func (o *Ocean) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *Ocean) error {
-	return o.createOrUpdate(t.Cloud.(awsup.AWSCloud), a, e, changes)
+	return o.createOrUpdate(t.Cloud, a, e, changes)
 }
 
 func (o *Ocean) createOrUpdate(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
@@ -318,7 +357,6 @@ func (o *Ocean) createOrUpdate(cloud awsup.AWSCloud, a, e, changes *Ocean) error
 
 func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 	klog.V(2).Infof("Creating Ocean %q", *e.Name)
-	e.applyDefaults()
 
 	ocean := &aws.Cluster{
 		Capacity: new(aws.Capacity),
@@ -336,16 +374,26 @@ func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 	// Capacity.
 	{
-		ocean.Capacity.SetTarget(fi.Int(int(*e.MinSize)))
-		ocean.Capacity.SetMinimum(fi.Int(int(*e.MinSize)))
-		ocean.Capacity.SetMaximum(fi.Int(int(*e.MaxSize)))
+		if !fi.BoolValue(e.UseAsTemplateOnly) {
+			ocean.Capacity.SetTarget(fi.Int(int(*e.MinSize)))
+			ocean.Capacity.SetMinimum(fi.Int(int(*e.MinSize)))
+			ocean.Capacity.SetMaximum(fi.Int(int(*e.MaxSize)))
+		}
 	}
 
 	// Strategy.
 	{
-		ocean.Strategy.SetSpotPercentage(e.SpotPercentage)
 		ocean.Strategy.SetFallbackToOnDemand(e.FallbackToOnDemand)
 		ocean.Strategy.SetUtilizeReservedInstances(e.UtilizeReservedInstances)
+		ocean.Strategy.SetUtilizeCommitments(e.UtilizeCommitments)
+
+		if e.DrainingTimeout != nil {
+			ocean.Strategy.SetDrainingTimeout(fi.Int(int(*e.DrainingTimeout)))
+		}
+
+		if e.GracePeriod != nil {
+			ocean.Strategy.SetGracePeriod(fi.Int(int(*e.GracePeriod)))
+		}
 	}
 
 	// Compute.
@@ -361,8 +409,28 @@ func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 			}
 		}
 
+		// Instance types.
+		{
+			itypes := new(aws.InstanceTypes)
+
+			// Whitelist.
+			if e.InstanceTypesWhitelist != nil {
+				itypes.SetWhitelist(e.InstanceTypesWhitelist)
+			}
+
+			// Blacklist.
+			if e.InstanceTypesBlacklist != nil {
+				itypes.SetBlacklist(e.InstanceTypesBlacklist)
+			}
+
+			if len(itypes.Whitelist) > 0 || len(itypes.Blacklist) > 0 {
+				ocean.Compute.SetInstanceTypes(itypes)
+			}
+		}
+
 		// Launch specification.
 		{
+			ocean.Compute.LaunchSpecification.SetUseAsTemplateOnly(e.UseAsTemplateOnly)
 			ocean.Compute.LaunchSpecification.SetMonitoring(e.Monitoring)
 			ocean.Compute.LaunchSpecification.SetKeyPair(e.SSHKey.Name)
 
@@ -377,27 +445,6 @@ func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 				}
 			}
 
-			// User data.
-			{
-				if e.UserData != nil {
-					userData, err := e.UserData.AsString()
-					if err != nil {
-						return err
-					}
-					encoded := base64.StdEncoding.EncodeToString([]byte(userData))
-					ocean.Compute.LaunchSpecification.SetUserData(fi.String(encoded))
-				}
-			}
-
-			// IAM instance profile.
-			{
-				if e.IAMInstanceProfile != nil {
-					iprof := new(aws.IAMInstanceProfile)
-					iprof.SetName(e.IAMInstanceProfile.GetName())
-					ocean.Compute.LaunchSpecification.SetIAMInstanceProfile(iprof)
-				}
-			}
-
 			// Security groups.
 			{
 				if e.SecurityGroups != nil {
@@ -409,35 +456,62 @@ func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 				}
 			}
 
-			// Public IP.
-			{
-				if e.AssociatePublicIP != nil {
-					ocean.Compute.LaunchSpecification.SetAssociatePublicIPAddress(e.AssociatePublicIP)
-				}
-			}
+			if !fi.BoolValue(e.UseAsTemplateOnly) {
+				// User data.
+				{
+					if e.UserData != nil {
+						userData, err := fi.ResourceAsString(e.UserData)
+						if err != nil {
+							return err
+						}
 
-			// Root volume options.
-			{
-				if opts := e.RootVolumeOpts; opts != nil {
-
-					// Volume size.
-					if opts.Size != nil {
-						ocean.Compute.LaunchSpecification.SetRootVolumeSize(fi.Int(int(*opts.Size)))
-					}
-
-					// EBS optimization.
-					if opts.Optimization != nil {
-						ocean.Compute.LaunchSpecification.SetEBSOptimized(opts.Optimization)
+						if len(userData) > 0 {
+							encoded := base64.StdEncoding.EncodeToString([]byte(userData))
+							ocean.Compute.LaunchSpecification.SetUserData(fi.String(encoded))
+						}
 					}
 				}
-			}
 
-			// Tags.
-			{
-				if e.Tags != nil {
-					ocean.Compute.LaunchSpecification.SetTags(e.buildTags())
+				// IAM instance profile.
+				{
+					if e.IAMInstanceProfile != nil {
+						iprof := new(aws.IAMInstanceProfile)
+						iprof.SetName(e.IAMInstanceProfile.GetName())
+						ocean.Compute.LaunchSpecification.SetIAMInstanceProfile(iprof)
+					}
+				}
+
+				// Root volume options.
+				{
+					if opts := e.RootVolumeOpts; opts != nil {
+
+						// Volume size.
+						if opts.Size != nil {
+							ocean.Compute.LaunchSpecification.SetRootVolumeSize(fi.Int(int(*opts.Size)))
+						}
+
+						// EBS optimization.
+						if opts.Optimization != nil {
+							ocean.Compute.LaunchSpecification.SetEBSOptimized(opts.Optimization)
+						}
+					}
+				}
+
+				// Public IP.
+				{
+					if e.AssociatePublicIPAddress != nil {
+						ocean.Compute.LaunchSpecification.SetAssociatePublicIPAddress(e.AssociatePublicIPAddress)
+					}
+				}
+
+				// Tags.
+				{
+					if e.Tags != nil {
+						ocean.Compute.LaunchSpecification.SetTags(e.buildTags())
+					}
 				}
 			}
+
 		}
 	}
 
@@ -449,16 +523,23 @@ func (_ *Ocean) create(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 			if opts.Enabled != nil {
 				autoScaler := new(aws.AutoScaler)
 				autoScaler.IsEnabled = opts.Enabled
-				autoScaler.IsAutoConfig = fi.Bool(true)
+				autoScaler.IsAutoConfig = opts.AutoConfig
+				autoScaler.AutoHeadroomPercentage = opts.AutoHeadroomPercentage
+				autoScaler.Cooldown = opts.Cooldown
 
-				// Headroom.
-				if headroom := opts.Headroom; headroom != nil {
-					autoScaler.IsAutoConfig = fi.Bool(false)
-					autoScaler.Headroom = &aws.AutoScalerHeadroom{
-						CPUPerUnit:    headroom.CPUPerUnit,
-						GPUPerUnit:    headroom.GPUPerUnit,
-						MemoryPerUnit: headroom.MemPerUnit,
-						NumOfUnits:    headroom.NumOfUnits,
+				// Scale down.
+				if down := opts.Down; down != nil {
+					autoScaler.Down = &aws.AutoScalerDown{
+						MaxScaleDownPercentage: down.MaxPercentage,
+						EvaluationPeriods:      down.EvaluationPeriods,
+					}
+				}
+
+				// Resource limits.
+				if limits := opts.ResourceLimits; limits != nil {
+					autoScaler.ResourceLimits = &aws.AutoScalerResourceLimits{
+						MaxVCPU:      limits.MaxVCPU,
+						MaxMemoryGiB: limits.MaxMemory,
 					}
 				}
 
@@ -486,9 +567,8 @@ readyLoop:
 		}
 
 		// Create a new Ocean.
-		id, err := cloud.Spotinst().Ocean().Create(context.Background(), oc)
+		_, err = cloud.Spotinst().Ocean().Create(context.Background(), oc)
 		if err == nil {
-			e.ID = fi.String(id)
 			break
 		}
 
@@ -515,7 +595,7 @@ readyLoop:
 func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 	klog.V(2).Infof("Updating Ocean %q", *e.Name)
 
-	actual, err := e.find(cloud.Spotinst().Ocean(), *e.Name)
+	actual, err := e.find(cloud.Spotinst().Ocean())
 	if err != nil {
 		klog.Errorf("Unable to resolve Ocean %q, error: %s", *e.Name, err)
 		return err
@@ -527,17 +607,6 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 	// Strategy.
 	{
-		// Spot percentage.
-		if changes.SpotPercentage != nil {
-			if ocean.Strategy == nil {
-				ocean.Strategy = new(aws.Strategy)
-			}
-
-			ocean.Strategy.SetSpotPercentage(e.SpotPercentage)
-			changes.SpotPercentage = nil
-			changed = true
-		}
-
 		// Fallback to on-demand.
 		if changes.FallbackToOnDemand != nil {
 			if ocean.Strategy == nil {
@@ -557,6 +626,39 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 			ocean.Strategy.SetUtilizeReservedInstances(e.UtilizeReservedInstances)
 			changes.UtilizeReservedInstances = nil
+			changed = true
+		}
+
+		// Utilize commitments.
+		if changes.UtilizeCommitments != nil {
+			if ocean.Strategy == nil {
+				ocean.Strategy = new(aws.Strategy)
+			}
+
+			ocean.Strategy.SetUtilizeCommitments(e.UtilizeCommitments)
+			changes.UtilizeCommitments = nil
+			changed = true
+		}
+
+		// Draining timeout.
+		if changes.DrainingTimeout != nil {
+			if ocean.Strategy == nil {
+				ocean.Strategy = new(aws.Strategy)
+			}
+
+			ocean.Strategy.SetDrainingTimeout(fi.Int(int(*e.DrainingTimeout)))
+			changes.DrainingTimeout = nil
+			changed = true
+		}
+
+		// Grace period.
+		if changes.GracePeriod != nil {
+			if ocean.Strategy == nil {
+				ocean.Strategy = new(aws.Strategy)
+			}
+
+			ocean.Strategy.SetGracePeriod(fi.Int(int(*e.GracePeriod)))
+			changes.GracePeriod = nil
 			changed = true
 		}
 	}
@@ -583,17 +685,36 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 		// Instance types.
 		{
-			if changes.InstanceTypes != nil {
-				if ocean.Compute == nil {
-					ocean.Compute = new(aws.Compute)
-				}
-				if ocean.Compute.InstanceTypes == nil {
-					ocean.Compute.InstanceTypes = new(aws.InstanceTypes)
-				}
+			// Whitelist.
+			{
+				if changes.InstanceTypesWhitelist != nil {
+					if ocean.Compute == nil {
+						ocean.Compute = new(aws.Compute)
+					}
+					if ocean.Compute.InstanceTypes == nil {
+						ocean.Compute.InstanceTypes = new(aws.InstanceTypes)
+					}
 
-				ocean.Compute.InstanceTypes.SetWhitelist(e.InstanceTypes)
-				changes.InstanceTypes = nil
-				changed = true
+					ocean.Compute.InstanceTypes.SetWhitelist(e.InstanceTypesWhitelist)
+					changes.InstanceTypesWhitelist = nil
+					changed = true
+				}
+			}
+
+			// Blacklist.
+			{
+				if changes.InstanceTypesBlacklist != nil {
+					if ocean.Compute == nil {
+						ocean.Compute = new(aws.Compute)
+					}
+					if ocean.Compute.InstanceTypes == nil {
+						ocean.Compute.InstanceTypes = new(aws.InstanceTypes)
+					}
+
+					ocean.Compute.InstanceTypes.SetBlacklist(e.InstanceTypesBlacklist)
+					changes.InstanceTypesBlacklist = nil
+					changed = true
+				}
 			}
 		}
 
@@ -616,28 +737,6 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 					ocean.Compute.LaunchSpecification.SetSecurityGroupIDs(securityGroupIDs)
 					changes.SecurityGroups = nil
-					changed = true
-				}
-			}
-
-			// User data.
-			{
-				if changes.UserData != nil {
-					if ocean.Compute == nil {
-						ocean.Compute = new(aws.Compute)
-					}
-					if ocean.Compute.LaunchSpecification == nil {
-						ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
-					}
-
-					userData, err := e.UserData.AsString()
-					if err != nil {
-						return err
-					}
-					encoded := base64.StdEncoding.EncodeToString([]byte(userData))
-
-					ocean.Compute.LaunchSpecification.SetUserData(fi.String(encoded))
-					changes.UserData = nil
 					changed = true
 				}
 			}
@@ -666,41 +765,6 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 				}
 			}
 
-			// Tags.
-			{
-				if changes.Tags != nil {
-					if ocean.Compute == nil {
-						ocean.Compute = new(aws.Compute)
-					}
-					if ocean.Compute.LaunchSpecification == nil {
-						ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
-					}
-
-					ocean.Compute.LaunchSpecification.SetTags(e.buildTags())
-					changes.Tags = nil
-					changed = true
-				}
-			}
-
-			// IAM instance profile.
-			{
-				if changes.IAMInstanceProfile != nil {
-					if ocean.Compute == nil {
-						ocean.Compute = new(aws.Compute)
-					}
-					if ocean.Compute.LaunchSpecification == nil {
-						ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
-					}
-
-					iprof := new(aws.IAMInstanceProfile)
-					iprof.SetName(e.IAMInstanceProfile.GetName())
-
-					ocean.Compute.LaunchSpecification.SetIAMInstanceProfile(iprof)
-					changes.IAMInstanceProfile = nil
-					changed = true
-				}
-			}
-
 			// Monitoring.
 			{
 				if changes.Monitoring != nil {
@@ -713,6 +777,22 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 					ocean.Compute.LaunchSpecification.SetMonitoring(e.Monitoring)
 					changes.Monitoring = nil
+					changed = true
+				}
+			}
+
+			// Template.
+			{
+				if changes.UseAsTemplateOnly != nil {
+					if ocean.Compute == nil {
+						ocean.Compute = new(aws.Compute)
+					}
+					if ocean.Compute.LaunchSpecification == nil {
+						ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
+					}
+
+					ocean.Compute.LaunchSpecification.SetUseAsTemplateOnly(e.UseAsTemplateOnly)
+					changes.UseAsTemplateOnly = nil
 					changed = true
 				}
 			}
@@ -733,28 +813,35 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 				}
 			}
 
-			// Public IP.
-			{
-				if changes.AssociatePublicIP != nil {
-					if ocean.Compute == nil {
-						ocean.Compute = new(aws.Compute)
-					}
-					if ocean.Compute.LaunchSpecification == nil {
-						ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
-					}
+			if !fi.BoolValue(e.UseAsTemplateOnly) {
+				// User data.
+				{
+					if changes.UserData != nil {
+						userData, err := fi.ResourceAsString(e.UserData)
+						if err != nil {
+							return err
+						}
 
-					ocean.Compute.LaunchSpecification.SetAssociatePublicIPAddress(e.AssociatePublicIP)
-					changes.AssociatePublicIP = nil
-					changed = true
+						if len(userData) > 0 {
+							if ocean.Compute == nil {
+								ocean.Compute = new(aws.Compute)
+							}
+							if ocean.Compute.LaunchSpecification == nil {
+								ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
+							}
+
+							encoded := base64.StdEncoding.EncodeToString([]byte(userData))
+							ocean.Compute.LaunchSpecification.SetUserData(fi.String(encoded))
+							changed = true
+						}
+
+						changes.UserData = nil
+					}
 				}
-			}
 
-			// Root volume options.
-			{
-				if opts := changes.RootVolumeOpts; opts != nil {
-
-					// Volume size.
-					if opts.Size != nil {
+				// Tags.
+				{
+					if changes.Tags != nil {
 						if ocean.Compute == nil {
 							ocean.Compute = new(aws.Compute)
 						}
@@ -762,12 +849,15 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 							ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
 						}
 
-						ocean.Compute.LaunchSpecification.SetRootVolumeSize(fi.Int(int(*opts.Size)))
+						ocean.Compute.LaunchSpecification.SetTags(e.buildTags())
+						changes.Tags = nil
 						changed = true
 					}
+				}
 
-					// EBS optimization.
-					if opts.Optimization != nil {
+				// IAM instance profile.
+				{
+					if changes.IAMInstanceProfile != nil {
 						if ocean.Compute == nil {
 							ocean.Compute = new(aws.Compute)
 						}
@@ -775,11 +865,63 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 							ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
 						}
 
-						ocean.Compute.LaunchSpecification.SetEBSOptimized(e.RootVolumeOpts.Optimization)
+						iprof := new(aws.IAMInstanceProfile)
+						iprof.SetName(e.IAMInstanceProfile.GetName())
+
+						ocean.Compute.LaunchSpecification.SetIAMInstanceProfile(iprof)
+						changes.IAMInstanceProfile = nil
 						changed = true
 					}
+				}
 
-					changes.RootVolumeOpts = nil
+				// Public IP.
+				{
+					if changes.AssociatePublicIPAddress != nil {
+						if ocean.Compute == nil {
+							ocean.Compute = new(aws.Compute)
+						}
+						if ocean.Compute.LaunchSpecification == nil {
+							ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
+						}
+
+						ocean.Compute.LaunchSpecification.SetAssociatePublicIPAddress(e.AssociatePublicIPAddress)
+						changes.AssociatePublicIPAddress = nil
+						changed = true
+					}
+				}
+
+				// Root volume options.
+				{
+					if opts := changes.RootVolumeOpts; opts != nil {
+
+						// Volume size.
+						if opts.Size != nil {
+							if ocean.Compute == nil {
+								ocean.Compute = new(aws.Compute)
+							}
+							if ocean.Compute.LaunchSpecification == nil {
+								ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
+							}
+
+							ocean.Compute.LaunchSpecification.SetRootVolumeSize(fi.Int(int(*opts.Size)))
+							changed = true
+						}
+
+						// EBS optimization.
+						if opts.Optimization != nil {
+							if ocean.Compute == nil {
+								ocean.Compute = new(aws.Compute)
+							}
+							if ocean.Compute.LaunchSpecification == nil {
+								ocean.Compute.LaunchSpecification = new(aws.LaunchSpecification)
+							}
+
+							ocean.Compute.LaunchSpecification.SetEBSOptimized(e.RootVolumeOpts.Optimization)
+							changed = true
+						}
+
+						changes.RootVolumeOpts = nil
+					}
 				}
 			}
 		}
@@ -787,28 +929,30 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 	// Capacity.
 	{
-		if changes.MinSize != nil {
-			if ocean.Capacity == nil {
-				ocean.Capacity = new(aws.Capacity)
-			}
+		if !fi.BoolValue(e.UseAsTemplateOnly) {
+			if changes.MinSize != nil {
+				if ocean.Capacity == nil {
+					ocean.Capacity = new(aws.Capacity)
+				}
 
-			ocean.Capacity.SetMinimum(fi.Int(int(*e.MinSize)))
-			changes.MinSize = nil
-			changed = true
+				ocean.Capacity.SetMinimum(fi.Int(int(*e.MinSize)))
+				changes.MinSize = nil
+				changed = true
 
-			// Scale up the target capacity, if needed.
-			if int64(*actual.Capacity.Target) < *e.MinSize {
-				ocean.Capacity.SetTarget(fi.Int(int(*e.MinSize)))
+				// Scale up the target capacity, if needed.
+				if int64(*actual.Capacity.Target) < *e.MinSize {
+					ocean.Capacity.SetTarget(fi.Int(int(*e.MinSize)))
+				}
 			}
-		}
-		if changes.MaxSize != nil {
-			if ocean.Capacity == nil {
-				ocean.Capacity = new(aws.Capacity)
-			}
+			if changes.MaxSize != nil {
+				if ocean.Capacity == nil {
+					ocean.Capacity = new(aws.Capacity)
+				}
 
-			ocean.Capacity.SetMaximum(fi.Int(int(*e.MaxSize)))
-			changes.MaxSize = nil
-			changed = true
+				ocean.Capacity.SetMaximum(fi.Int(int(*e.MaxSize)))
+				changes.MaxSize = nil
+				changed = true
+			}
 		}
 	}
 
@@ -818,19 +962,28 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 			if opts.Enabled != nil {
 				autoScaler := new(aws.AutoScaler)
 				autoScaler.IsEnabled = e.AutoScalerOpts.Enabled
+				autoScaler.IsAutoConfig = e.AutoScalerOpts.AutoConfig
+				autoScaler.AutoHeadroomPercentage = e.AutoScalerOpts.AutoHeadroomPercentage
+				autoScaler.Cooldown = e.AutoScalerOpts.Cooldown
 
-				// Headroom.
-				if headroom := opts.Headroom; headroom != nil {
-					autoScaler.IsAutoConfig = fi.Bool(false)
-					autoScaler.Headroom = &aws.AutoScalerHeadroom{
-						CPUPerUnit:    e.AutoScalerOpts.Headroom.CPUPerUnit,
-						GPUPerUnit:    e.AutoScalerOpts.Headroom.GPUPerUnit,
-						MemoryPerUnit: e.AutoScalerOpts.Headroom.MemPerUnit,
-						NumOfUnits:    e.AutoScalerOpts.Headroom.NumOfUnits,
+				// Scale down.
+				if down := opts.Down; down != nil {
+					autoScaler.Down = &aws.AutoScalerDown{
+						MaxScaleDownPercentage: down.MaxPercentage,
+						EvaluationPeriods:      down.EvaluationPeriods,
 					}
-				} else {
-					autoScaler.IsAutoConfig = fi.Bool(true)
-					autoScaler.SetHeadroom(nil)
+				} else if a.AutoScalerOpts.Down != nil {
+					autoScaler.SetDown(nil)
+				}
+
+				// Resource limits.
+				if limits := opts.ResourceLimits; limits != nil {
+					autoScaler.ResourceLimits = &aws.AutoScalerResourceLimits{
+						MaxVCPU:      limits.MaxVCPU,
+						MaxMemoryGiB: limits.MaxMemory,
+					}
+				} else if a.AutoScalerOpts.ResourceLimits != nil {
+					autoScaler.SetResourceLimits(nil)
 				}
 
 				ocean.SetAutoScaler(autoScaler)
@@ -843,15 +996,15 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 
 	empty := &Ocean{}
 	if !reflect.DeepEqual(empty, changes) {
-		klog.Warningf("Not all changes applied to Ocean %q: %v", *ocean.ID, changes)
+		klog.Warningf("Not all changes applied to Ocean %q: %v", *e.Name, changes)
 	}
 
 	if !changed {
-		klog.V(2).Infof("No changes detected in Ocean %q", *ocean.ID)
+		klog.V(2).Infof("No changes detected in Ocean %q", *e.Name)
 		return nil
 	}
 
-	klog.V(2).Infof("Updating Ocean %q (config: %s)", *ocean.ID, stringutil.Stringify(ocean))
+	klog.V(2).Infof("Updating Ocean %q (config: %s)", *e.Name, stringutil.Stringify(ocean))
 
 	// Wrap the raw object as an Ocean.
 	oc, err := spotinst.NewOcean(cloud.ProviderID(), ocean)
@@ -868,62 +1021,49 @@ func (_ *Ocean) update(cloud awsup.AWSCloud, a, e, changes *Ocean) error {
 }
 
 type terraformOcean struct {
-	Name                *string              `json:"name,omitempty"`
-	ControllerClusterID *string              `json:"controller_id,omitempty"`
-	Region              *string              `json:"region,omitempty"`
-	SubnetIDs           []*terraform.Literal `json:"subnet_ids,omitempty"`
-	AutoScaler          *terraformAutoScaler `json:"autoscaler,omitempty"`
-	Tags                []*terraformKV       `json:"tags,omitempty"`
-	Lifecycle           *terraformLifecycle  `json:"lifecycle,omitempty"`
+	Name                   *string                    `cty:"name"`
+	ControllerClusterID    *string                    `cty:"controller_id"`
+	Region                 *string                    `cty:"region"`
+	InstanceTypesWhitelist []string                   `cty:"whitelist"`
+	InstanceTypesBlacklist []string                   `cty:"blacklist"`
+	SubnetIDs              []*terraformWriter.Literal `cty:"subnet_ids"`
+	AutoScaler             *terraformAutoScaler       `cty:"autoscaler"`
+	Tags                   []*terraformKV             `cty:"tags"`
 
-	*terraformOceanCapacity
-	*terraformOceanStrategy
-	*terraformOceanLaunchSpec
-}
+	MinSize         *int64 `cty:"min_size"`
+	MaxSize         *int64 `cty:"max_size"`
+	DesiredCapacity *int64 `cty:"desired_capacity"`
 
-type terraformOceanCapacity struct {
-	MinSize         *int64 `json:"min_size,omitempty"`
-	MaxSize         *int64 `json:"max_size,omitempty"`
-	DesiredCapacity *int64 `json:"desired_capacity,omitempty"`
-}
+	FallbackToOnDemand       *bool  `cty:"fallback_to_ondemand"`
+	UtilizeReservedInstances *bool  `cty:"utilize_reserved_instances"`
+	UtilizeCommitments       *bool  `cty:"utilize_commitments"`
+	DrainingTimeout          *int64 `cty:"draining_timeout"`
+	GracePeriod              *int64 `cty:"grace_period"`
 
-type terraformOceanStrategy struct {
-	SpotPercentage           *float64 `json:"spot_percentage,omitempty"`
-	FallbackToOnDemand       *bool    `json:"fallback_to_ondemand,omitempty"`
-	UtilizeReservedInstances *bool    `json:"utilize_reserved_instances,omitempty"`
-}
-
-type terraformOceanLaunchSpec struct {
-	Monitoring               *bool                `json:"monitoring,omitempty"`
-	EBSOptimized             *bool                `json:"ebs_optimized,omitempty"`
-	ImageID                  *string              `json:"image_id,omitempty"`
-	AssociatePublicIPAddress *bool                `json:"associate_public_ip_address,omitempty"`
-	RootVolumeSize           *int32               `json:"root_volume_size,omitempty"`
-	UserData                 *terraform.Literal   `json:"user_data,omitempty"`
-	IAMInstanceProfile       *terraform.Literal   `json:"iam_instance_profile,omitempty"`
-	KeyName                  *terraform.Literal   `json:"key_name,omitempty"`
-	SecurityGroups           []*terraform.Literal `json:"security_groups,omitempty"`
-	Labels                   []*terraformKV       `json:"labels,omitempty"`
+	UseAsTemplateOnly        *bool                      `cty:"use_as_template_only"`
+	Monitoring               *bool                      `cty:"monitoring"`
+	EBSOptimized             *bool                      `cty:"ebs_optimized"`
+	ImageID                  *string                    `cty:"image_id"`
+	AssociatePublicIPAddress *bool                      `cty:"associate_public_ip_address"`
+	RootVolumeSize           *int64                     `cty:"root_volume_size"`
+	UserData                 *terraformWriter.Literal   `cty:"user_data"`
+	IAMInstanceProfile       *terraformWriter.Literal   `cty:"iam_instance_profile"`
+	KeyName                  *terraformWriter.Literal   `cty:"key_name"`
+	SecurityGroups           []*terraformWriter.Literal `cty:"security_groups"`
 }
 
 func (_ *Ocean) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Ocean) error {
 	cloud := t.Cloud.(awsup.AWSCloud)
-	e.applyDefaults()
 
 	tf := &terraformOcean{
-		Name:   e.Name,
-		Region: fi.String(cloud.Region()),
-		terraformOceanCapacity: &terraformOceanCapacity{
-			DesiredCapacity: e.MinSize,
-			MinSize:         e.MinSize,
-			MaxSize:         e.MaxSize,
-		},
-		terraformOceanStrategy: &terraformOceanStrategy{
-			SpotPercentage:           e.SpotPercentage,
-			FallbackToOnDemand:       e.FallbackToOnDemand,
-			UtilizeReservedInstances: e.UtilizeReservedInstances,
-		},
-		terraformOceanLaunchSpec: &terraformOceanLaunchSpec{},
+		Name:                     e.Name,
+		Region:                   fi.String(cloud.Region()),
+		UseAsTemplateOnly:        e.UseAsTemplateOnly,
+		FallbackToOnDemand:       e.FallbackToOnDemand,
+		UtilizeReservedInstances: e.UtilizeReservedInstances,
+		UtilizeCommitments:       e.UtilizeCommitments,
+		DrainingTimeout:          e.DrainingTimeout,
+		GracePeriod:              e.GracePeriod,
 	}
 
 	// Image.
@@ -958,39 +1098,6 @@ func (_ *Ocean) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Oce
 		}
 	}
 
-	// User data.
-	if e.UserData != nil {
-		var err error
-		tf.UserData, err = t.AddFile("spotinst_ocean_aws", *e.Name, "user_data", e.UserData)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Public IP.
-	if e.AssociatePublicIP != nil {
-		tf.AssociatePublicIPAddress = e.AssociatePublicIP
-	}
-
-	// Root volume options.
-	if opts := e.RootVolumeOpts; opts != nil {
-
-		// Volume size.
-		if opts.Size != nil {
-			tf.RootVolumeSize = opts.Size
-		}
-
-		// EBS optimization.
-		if opts.Optimization != nil {
-			tf.EBSOptimized = opts.Optimization
-		}
-	}
-
-	// IAM instance profile.
-	if e.IAMInstanceProfile != nil {
-		tf.IAMInstanceProfile = e.IAMInstanceProfile.TerraformLink()
-	}
-
 	// Monitoring.
 	if e.Monitoring != nil {
 		tf.Monitoring = e.Monitoring
@@ -1013,6 +1120,19 @@ func (_ *Ocean) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Oce
 		}
 	}
 
+	// Instance types.
+	{
+		// Whitelist.
+		if e.InstanceTypesWhitelist != nil {
+			tf.InstanceTypesWhitelist = e.InstanceTypesWhitelist
+		}
+
+		// Blacklist.
+		if e.InstanceTypesBlacklist != nil {
+			tf.InstanceTypesBlacklist = e.InstanceTypesBlacklist
+		}
+	}
+
 	// Auto Scaler.
 	{
 		if opts := e.AutoScalerOpts; opts != nil {
@@ -1020,36 +1140,71 @@ func (_ *Ocean) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Oce
 
 			if opts.Enabled != nil {
 				tf.AutoScaler = &terraformAutoScaler{
-					Enabled:    opts.Enabled,
-					AutoConfig: fi.Bool(true),
+					Enabled:                opts.Enabled,
+					AutoConfig:             opts.AutoConfig,
+					AutoHeadroomPercentage: opts.AutoHeadroomPercentage,
+					Cooldown:               opts.Cooldown,
 				}
 
-				// Headroom.
-				if headroom := opts.Headroom; headroom != nil {
-					tf.AutoScaler.AutoConfig = fi.Bool(false)
-					tf.AutoScaler.Headroom = &terraformAutoScalerHeadroom{
-						CPUPerUnit: headroom.CPUPerUnit,
-						GPUPerUnit: headroom.GPUPerUnit,
-						MemPerUnit: headroom.MemPerUnit,
-						NumOfUnits: headroom.NumOfUnits,
+				// Scale down.
+				if down := opts.Down; down != nil {
+					tf.AutoScaler.Down = &terraformAutoScalerDown{
+						MaxPercentage:     down.MaxPercentage,
+						EvaluationPeriods: down.EvaluationPeriods,
 					}
 				}
 
-				// Ignore capacity changes because the auto scaler updates the
-				// desired capacity overtime.
-				if fi.BoolValue(tf.AutoScaler.Enabled) {
-					tf.Lifecycle = &terraformLifecycle{
-						IgnoreChanges: []string{
-							"desired_capacity",
-						},
+				// Resource limits.
+				if limits := opts.ResourceLimits; limits != nil {
+					tf.AutoScaler.ResourceLimits = &terraformAutoScalerResourceLimits{
+						MaxVCPU:   limits.MaxVCPU,
+						MaxMemory: limits.MaxVCPU,
 					}
 				}
 			}
 		}
 	}
 
-	// Tags.
-	{
+	if !fi.BoolValue(tf.UseAsTemplateOnly) {
+		// Capacity.
+		tf.DesiredCapacity = e.MinSize
+		tf.MinSize = e.MinSize
+		tf.MaxSize = e.MaxSize
+
+		// Root volume options.
+		if opts := e.RootVolumeOpts; opts != nil {
+
+			// Volume size.
+			if opts.Size != nil {
+				tf.RootVolumeSize = opts.Size
+			}
+
+			// EBS optimization.
+			if opts.Optimization != nil {
+				tf.EBSOptimized = opts.Optimization
+			}
+		}
+
+		// IAM instance profile.
+		if e.IAMInstanceProfile != nil {
+			tf.IAMInstanceProfile = e.IAMInstanceProfile.TerraformLink()
+		}
+
+		// User data.
+		if e.UserData != nil {
+			var err error
+			tf.UserData, err = t.AddFileResource("spotinst_ocean_aws", *e.Name, "user_data", e.UserData, false)
+			if err != nil {
+				return err
+			}
+		}
+
+		// Public IP.
+		if e.AssociatePublicIPAddress != nil {
+			tf.AssociatePublicIPAddress = e.AssociatePublicIPAddress
+		}
+
+		// Tags.
 		if e.Tags != nil {
 			for _, tag := range e.buildTags() {
 				tf.Tags = append(tf.Tags, &terraformKV{
@@ -1063,8 +1218,8 @@ func (_ *Ocean) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *Oce
 	return t.RenderResource("spotinst_ocean_aws", *e.Name, tf)
 }
 
-func (o *Ocean) TerraformLink() *terraform.Literal {
-	return terraform.LiteralProperty("spotinst_ocean_aws", *o.Name, "id")
+func (o *Ocean) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralProperty("spotinst_ocean_aws", *o.Name, "id")
 }
 
 func (o *Ocean) buildTags() []*aws.Tag {
@@ -1078,23 +1233,4 @@ func (o *Ocean) buildTags() []*aws.Tag {
 	}
 
 	return tags
-}
-
-func (o *Ocean) applyDefaults() {
-	if o.SpotPercentage == nil {
-		f := float64(100.0)
-		o.SpotPercentage = &f
-	}
-
-	if o.FallbackToOnDemand == nil {
-		o.FallbackToOnDemand = fi.Bool(true)
-	}
-
-	if o.UtilizeReservedInstances == nil {
-		o.UtilizeReservedInstances = fi.Bool(true)
-	}
-
-	if o.Monitoring == nil {
-		o.Monitoring = fi.Bool(false)
-	}
 }

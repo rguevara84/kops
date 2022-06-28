@@ -21,17 +21,18 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=RouteTable
+// +kops:fitask
 type RouteTable struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	ID  *string
 	VPC *VPC
@@ -174,7 +175,8 @@ func (_ *RouteTable) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *RouteTable)
 		klog.V(2).Infof("Creating RouteTable with VPC: %q", *vpcID)
 
 		request := &ec2.CreateRouteTableInput{
-			VpcId: vpcID,
+			VpcId:             vpcID,
+			TagSpecifications: awsup.EC2TagSpecification(ec2.ResourceTypeRouteTable, e.Tags),
 		}
 
 		response, err := t.Cloud.EC2().CreateRouteTable(request)
@@ -190,8 +192,8 @@ func (_ *RouteTable) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *RouteTable)
 }
 
 type terraformRouteTable struct {
-	VPCID *terraform.Literal `json:"vpc_id"`
-	Tags  map[string]string  `json:"tags,omitempty"`
+	VPCID *terraformWriter.Literal `cty:"vpc_id"`
+	Tags  map[string]string        `cty:"tags"`
 }
 
 func (_ *RouteTable) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *RouteTable) error {
@@ -211,8 +213,8 @@ func (_ *RouteTable) RenderTerraform(t *terraform.TerraformTarget, a, e, changes
 	return t.RenderResource("aws_route_table", *e.Name, tf)
 }
 
-func (e *RouteTable) TerraformLink() *terraform.Literal {
-	return terraform.LiteralProperty("aws_route_table", *e.Name, "id")
+func (e *RouteTable) TerraformLink() *terraformWriter.Literal {
+	return terraformWriter.LiteralProperty("aws_route_table", *e.Name, "id")
 }
 
 type cloudformationRouteTable struct {

@@ -22,7 +22,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // KubeconfigBuilder builds a kubecfg file
@@ -33,26 +33,24 @@ type KubeconfigBuilder struct {
 	Context   string
 	Namespace string
 
-	KubeBearerToken string
-	KubeUser        string
-	KubePassword    string
+	User         string
+	KubeUser     string
+	KubePassword string
 
-	CACert     []byte
+	CACerts    []byte
 	ClientCert []byte
 	ClientKey  []byte
 
-	configAccess clientcmd.ConfigAccess
+	AuthenticationExec []string
 }
 
 // Create new KubeconfigBuilder
-func NewKubeconfigBuilder(configAccess clientcmd.ConfigAccess) *KubeconfigBuilder {
-	c := &KubeconfigBuilder{}
-	c.configAccess = configAccess
-	return c
+func NewKubeconfigBuilder() *KubeconfigBuilder {
+	return &KubeconfigBuilder{}
 }
 
-func (b *KubeconfigBuilder) DeleteKubeConfig() error {
-	config, err := b.configAccess.GetStartingConfig()
+func (b *KubeconfigBuilder) DeleteKubeConfig(configAccess clientcmd.ConfigAccess) error {
+	config, err := configAccess.GetStartingConfig()
 	if err != nil {
 		return fmt.Errorf("error loading kubeconfig: %v", err)
 	}
@@ -71,7 +69,7 @@ func (b *KubeconfigBuilder) DeleteKubeConfig() error {
 		config.CurrentContext = ""
 	}
 
-	if err := clientcmd.ModifyConfig(b.configAccess, *config, false); err != nil {
+	if err := clientcmd.ModifyConfig(configAccess, *config, false); err != nil {
 		return fmt.Errorf("error writing kubeconfig: %v", err)
 	}
 
@@ -84,24 +82,18 @@ func (c *KubeconfigBuilder) BuildRestConfig() (*rest.Config, error) {
 	restConfig := &rest.Config{
 		Host: c.Server,
 	}
-	restConfig.CAData = c.CACert
+	restConfig.CAData = c.CACerts
 	restConfig.CertData = c.ClientCert
 	restConfig.KeyData = c.ClientKey
-
-	// username/password or bearer token may be set, but not both
-	if c.KubeBearerToken != "" {
-		restConfig.BearerToken = c.KubeBearerToken
-	} else {
-		restConfig.Username = c.KubeUser
-		restConfig.Password = c.KubePassword
-	}
+	restConfig.Username = c.KubeUser
+	restConfig.Password = c.KubePassword
 
 	return restConfig, nil
 }
 
 // Write out a new kubeconfig
-func (b *KubeconfigBuilder) WriteKubecfg() error {
-	config, err := b.configAccess.GetStartingConfig()
+func (b *KubeconfigBuilder) WriteKubecfg(configAccess clientcmd.ConfigAccess) error {
+	config, err := configAccess.GetStartingConfig()
 	if err != nil {
 		return fmt.Errorf("error reading kubeconfig: %v", err)
 	}
@@ -116,17 +108,7 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 			cluster = clientcmdapi.NewCluster()
 		}
 		cluster.Server = b.Server
-
-		if b.CACert == nil {
-			// For now, we assume that the cluster has a "real" cert issued by a CA
-			cluster.InsecureSkipTLSVerify = false
-			cluster.CertificateAuthority = ""
-			cluster.CertificateAuthorityData = nil
-		} else {
-			cluster.InsecureSkipTLSVerify = false
-			cluster.CertificateAuthority = ""
-			cluster.CertificateAuthorityData = b.CACert
-		}
+		cluster.CertificateAuthorityData = b.CACerts
 
 		if config.Clusters == nil {
 			config.Clusters = make(map[string]*clientcmdapi.Cluster)
@@ -134,30 +116,58 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 		config.Clusters[b.Context] = cluster
 	}
 
-	{
+	// We avoid changing the user unless we're actually writing something
+	// Issue #11537
+	haveUserInfo := false
+
+	// If the user has the same name as the context, it is the admin user
+	if b.User == b.Context {
 		authInfo := config.AuthInfos[b.Context]
 		if authInfo == nil {
 			authInfo = clientcmdapi.NewAuthInfo()
 		}
 
-		if b.KubeBearerToken != "" {
-			authInfo.Token = b.KubeBearerToken
-		} else if b.KubeUser != "" && b.KubePassword != "" {
+		// If we are using the auth plugin, we want to clear the password & client-key,
+		// otherwise the auth plugin won't be used
+
+		usingAuthPlugin := len(b.AuthenticationExec) != 0
+		if (b.KubeUser != "" && b.KubePassword != "") || usingAuthPlugin {
 			authInfo.Username = b.KubeUser
 			authInfo.Password = b.KubePassword
+
+			haveUserInfo = true
 		}
 
-		if b.ClientCert != nil && b.ClientKey != nil {
+		if (b.ClientCert != nil && b.ClientKey != nil) || usingAuthPlugin {
 			authInfo.ClientCertificate = ""
 			authInfo.ClientCertificateData = b.ClientCert
 			authInfo.ClientKey = ""
 			authInfo.ClientKeyData = b.ClientKey
+
+			haveUserInfo = true
 		}
 
-		if config.AuthInfos == nil {
-			config.AuthInfos = make(map[string]*clientcmdapi.AuthInfo)
+		if usingAuthPlugin {
+			authInfo.Exec = &clientcmdapi.ExecConfig{
+				APIVersion: "client.authentication.k8s.io/v1beta1",
+				Command:    b.AuthenticationExec[0],
+				Args:       b.AuthenticationExec[1:],
+			}
+
+			haveUserInfo = true
 		}
-		config.AuthInfos[b.Context] = authInfo
+
+		if haveUserInfo {
+			if config.AuthInfos == nil {
+				config.AuthInfos = make(map[string]*clientcmdapi.AuthInfo)
+			}
+			config.AuthInfos[b.Context] = authInfo
+		}
+	} else if b.User != "" {
+		if config.AuthInfos[b.User] == nil {
+			return fmt.Errorf("could not find user %q", b.User)
+		}
+		haveUserInfo = true
 	}
 
 	// If we have a bearer token, also create a credential entry with basic auth
@@ -186,7 +196,11 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 		}
 
 		context.Cluster = b.Context
-		context.AuthInfo = b.Context
+		if haveUserInfo {
+			if b.User != "" {
+				context.AuthInfo = b.User
+			}
+		}
 
 		if b.Namespace != "" {
 			context.Namespace = b.Namespace
@@ -200,10 +214,10 @@ func (b *KubeconfigBuilder) WriteKubecfg() error {
 
 	config.CurrentContext = b.Context
 
-	if err := clientcmd.ModifyConfig(b.configAccess, *config, true); err != nil {
+	if err := clientcmd.ModifyConfig(configAccess, *config, true); err != nil {
 		return err
 	}
 
-	fmt.Printf("kops has set your kubectl context to %s\n", b.Context)
+	fmt.Printf("kOps has set your kubectl context to %s\n", b.Context)
 	return nil
 }

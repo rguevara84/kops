@@ -20,16 +20,17 @@ import (
 	"fmt"
 	"reflect"
 
-	compute "google.golang.org/api/compute/v0.beta"
+	compute "google.golang.org/api/compute/v1"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
-//go:generate fitask -type=InstanceGroupManager
+// +kops:fitask
 type InstanceGroupManager struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
 	Zone             *string
 	BaseInstanceName *string
@@ -48,7 +49,7 @@ func (e *InstanceGroupManager) CompareWithID() *string {
 func (e *InstanceGroupManager) Find(c *fi.Context) (*InstanceGroupManager, error) {
 	cloud := c.Cloud.(gce.GCECloud)
 
-	r, err := cloud.Compute().InstanceGroupManagers.Get(cloud.Project(), *e.Zone, *e.Name).Do()
+	r, err := cloud.Compute().InstanceGroupManagers().Get(cloud.Project(), *e.Zone, *e.Name)
 	if err != nil {
 		if gce.IsNotFound(err) {
 			return nil, nil
@@ -109,7 +110,7 @@ func (_ *InstanceGroupManager) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Ins
 			// TargetSize 0 will normally be omitted by the marshaling code; we need to force it
 			i.ForceSendFields = append(i.ForceSendFields, "TargetSize")
 		}
-		op, err := t.Cloud.Compute().InstanceGroupManagers.Insert(t.Cloud.Project(), *e.Zone, i).Do()
+		op, err := t.Cloud.Compute().InstanceGroupManagers().Insert(t.Cloud.Project(), *e.Zone, i)
 		if err != nil {
 			return fmt.Errorf("error creating InstanceGroupManager: %v", err)
 		}
@@ -119,10 +120,7 @@ func (_ *InstanceGroupManager) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Ins
 		}
 	} else {
 		if changes.TargetPools != nil {
-			request := &compute.InstanceGroupManagersSetTargetPoolsRequest{
-				TargetPools: i.TargetPools,
-			}
-			op, err := t.Cloud.Compute().InstanceGroupManagers.SetTargetPools(t.Cloud.Project(), *e.Zone, i.Name, request).Do()
+			op, err := t.Cloud.Compute().InstanceGroupManagers().SetTargetPools(t.Cloud.Project(), *e.Zone, i.Name, i.TargetPools)
 			if err != nil {
 				return fmt.Errorf("error updating TargetPools for InstanceGroupManager: %v", err)
 			}
@@ -135,10 +133,7 @@ func (_ *InstanceGroupManager) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Ins
 		}
 
 		if changes.InstanceTemplate != nil {
-			request := &compute.InstanceGroupManagersSetInstanceTemplateRequest{
-				InstanceTemplate: instanceTemplateURL,
-			}
-			op, err := t.Cloud.Compute().InstanceGroupManagers.SetInstanceTemplate(t.Cloud.Project(), *e.Zone, i.Name, request).Do()
+			op, err := t.Cloud.Compute().InstanceGroupManagers().SetInstanceTemplate(t.Cloud.Project(), *e.Zone, i.Name, instanceTemplateURL)
 			if err != nil {
 				return fmt.Errorf("error updating InstanceTemplate for InstanceGroupManager: %v", err)
 			}
@@ -151,13 +146,11 @@ func (_ *InstanceGroupManager) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Ins
 		}
 
 		if changes.TargetSize != nil {
-			request := &compute.InstanceGroupManagersResizeAdvancedRequest{
-				TargetSize: i.TargetSize,
+			newSize := int64(0)
+			if i.TargetSize != 0 {
+				newSize = int64(i.TargetSize)
 			}
-			if i.TargetSize == 0 {
-				request.ForceSendFields = append(request.ForceSendFields, "TargetSize")
-			}
-			op, err := t.Cloud.Compute().InstanceGroupManagers.ResizeAdvanced(t.Cloud.Project(), *e.Zone, i.Name, request).Do()
+			op, err := t.Cloud.Compute().InstanceGroupManagers().Resize(t.Cloud.Project(), *e.Zone, i.Name, newSize)
 			if err != nil {
 				return fmt.Errorf("error resizing InstanceGroupManager: %v", err)
 			}
@@ -179,12 +172,16 @@ func (_ *InstanceGroupManager) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Ins
 }
 
 type terraformInstanceGroupManager struct {
-	Name             *string              `json:"name"`
-	Zone             *string              `json:"zone"`
-	BaseInstanceName *string              `json:"base_instance_name"`
-	InstanceTemplate *terraform.Literal   `json:"instance_template"`
-	TargetSize       *int64               `json:"target_size"`
-	TargetPools      []*terraform.Literal `json:"target_pools,omitempty"`
+	Name             *string                    `cty:"name"`
+	Zone             *string                    `cty:"zone"`
+	BaseInstanceName *string                    `cty:"base_instance_name"`
+	Version          *terraformVersion          `cty:"version"`
+	TargetSize       *int64                     `cty:"target_size"`
+	TargetPools      []*terraformWriter.Literal `cty:"target_pools"`
+}
+
+type terraformVersion struct {
+	InstanceTemplate *terraformWriter.Literal `cty:"instance_template"`
 }
 
 func (_ *InstanceGroupManager) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *InstanceGroupManager) error {
@@ -192,8 +189,10 @@ func (_ *InstanceGroupManager) RenderTerraform(t *terraform.TerraformTarget, a, 
 		Name:             e.Name,
 		Zone:             e.Zone,
 		BaseInstanceName: e.BaseInstanceName,
-		InstanceTemplate: e.InstanceTemplate.TerraformLink(),
 		TargetSize:       e.TargetSize,
+	}
+	tf.Version = &terraformVersion{
+		InstanceTemplate: e.InstanceTemplate.TerraformLink(),
 	}
 
 	for _, targetPool := range e.TargetPools {

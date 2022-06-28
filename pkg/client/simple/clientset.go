@@ -17,31 +17,37 @@ limitations under the License.
 package simple
 
 import (
+	"context"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/kops/pkg/apis/kops"
 	kopsinternalversion "k8s.io/kops/pkg/client/clientset_generated/clientset/typed/kops/internalversion"
+	"k8s.io/kops/pkg/kubemanifest"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/util/pkg/vfs"
 )
 
 type Clientset interface {
 	// GetCluster reads a cluster by name
-	GetCluster(name string) (*kops.Cluster, error)
+	GetCluster(ctx context.Context, name string) (*kops.Cluster, error)
 
 	// CreateCluster creates a cluster
-	CreateCluster(cluster *kops.Cluster) (*kops.Cluster, error)
+	CreateCluster(ctx context.Context, cluster *kops.Cluster) (*kops.Cluster, error)
 
 	// UpdateCluster updates a cluster
-	UpdateCluster(cluster *kops.Cluster, status *kops.ClusterStatus) (*kops.Cluster, error)
+	UpdateCluster(ctx context.Context, cluster *kops.Cluster, status *kops.ClusterStatus) (*kops.Cluster, error)
 
 	// ListClusters returns all clusters
-	ListClusters(options metav1.ListOptions) (*kops.ClusterList, error)
+	ListClusters(ctx context.Context, options metav1.ListOptions) (*kops.ClusterList, error)
 
 	// ConfigBaseFor returns the vfs path where we will read configuration information from
 	ConfigBaseFor(cluster *kops.Cluster) (vfs.Path, error)
 
-	// InstanceGroupsFor returns the InstanceGroupInterface bounds to the namespace for a particular Cluster
+	// InstanceGroupsFor returns the InstanceGroupInterface bound to the namespace for a particular Cluster
 	InstanceGroupsFor(cluster *kops.Cluster) kopsinternalversion.InstanceGroupInterface
+
+	// AddonsFor returns the client for addon objects for a particular Cluster
+	AddonsFor(cluster *kops.Cluster) AddonsClient
 
 	// SecretStore builds the secret store for the specified cluster
 	SecretStore(cluster *kops.Cluster) (fi.SecretStore, error)
@@ -53,5 +59,15 @@ type Clientset interface {
 	SSHCredentialStore(cluster *kops.Cluster) (fi.SSHCredentialStore, error)
 
 	// DeleteCluster deletes all the state for the specified cluster
-	DeleteCluster(cluster *kops.Cluster) error
+	DeleteCluster(ctx context.Context, cluster *kops.Cluster) error
+}
+
+// AddonsClient is a client for manipulating cluster addons
+// Because we want to support storing these directly in a cluster, we don't group them
+type AddonsClient interface {
+	// Replace replaces all the addon objects with the provided list
+	Replace(objects kubemanifest.ObjectList) error
+
+	// List returns all the addon objects
+	List() (kubemanifest.ObjectList, error)
 }

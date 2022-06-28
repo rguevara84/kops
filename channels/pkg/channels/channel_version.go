@@ -17,16 +17,19 @@ limitations under the License.
 package channels
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
-	"github.com/blang/semver"
+	certmanager "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const AnnotationPrefix = "addons.k8s.io/"
@@ -36,11 +39,20 @@ type Channel struct {
 	Name      string
 }
 
+// CurrentSystemGeneration holds our current SystemGeneration value.
+// Version history:
+//   0  Pre-history (and the default value); versions prior to prune.
+//   1  Prune functionality introduced.
+const CurrentSystemGeneration = 1
+
 type ChannelVersion struct {
-	Version      *string `json:"version,omitempty"`
 	Channel      *string `json:"channel,omitempty"`
 	Id           string  `json:"id,omitempty"`
 	ManifestHash string  `json:"manifestHash,omitempty"`
+
+	// SystemGeneration holds the generation of the channels functionality.
+	// It is used so that we reapply when we introduce new features, such as prune.
+	SystemGeneration int `json:"systemGeneration,omitempty"`
 }
 
 func stringValue(s *string) string {
@@ -51,13 +63,14 @@ func stringValue(s *string) string {
 }
 
 func (c *ChannelVersion) String() string {
-	s := "Version=" + stringValue(c.Version) + " Channel=" + stringValue(c.Channel)
+	s := "Channel=" + stringValue(c.Channel)
 	if c.Id != "" {
 		s += " Id=" + c.Id
 	}
 	if c.ManifestHash != "" {
 		s += " ManifestHash=" + c.ManifestHash
 	}
+	s += " SystemGeneration=" + strconv.Itoa(c.SystemGeneration)
 	return s
 }
 
@@ -70,7 +83,7 @@ func ParseChannelVersion(s string) (*ChannelVersion, error) {
 	return v, nil
 }
 
-func FindAddons(ns *v1.Namespace) map[string]*ChannelVersion {
+func FindChannelVersions(ns *v1.Namespace) map[string]*ChannelVersion {
 	addons := make(map[string]*ChannelVersion)
 	for k, v := range ns.Annotations {
 		if !strings.HasPrefix(k, AnnotationPrefix) {
@@ -101,56 +114,35 @@ func (c *Channel) AnnotationName() string {
 	return AnnotationPrefix + c.Name
 }
 
-func (c *ChannelVersion) replaces(existing *ChannelVersion) bool {
-	klog.V(4).Infof("Checking existing channel: %v compared to new channel: %v", existing, c)
-	if existing.Version != nil {
-		if c.Version == nil {
-			klog.V(4).Infof("New Version info missing")
+func (c *ChannelVersion) replaces(name string, existing *ChannelVersion) bool {
+	klog.V(6).Infof("Checking existing config for %q: %v compared to new channel: %v", name, existing, c)
+
+	if c.Id != existing.Id {
+		klog.V(4).Infof("cluster has different ids for %q (%q vs %q); will replace", name, c.Id, existing.Id)
+		return true
+	}
+
+	if c.ManifestHash != existing.ManifestHash {
+		klog.V(4).Infof("cluster has different ManifestHash for %q (%q vs %q); will replace", name, c.ManifestHash, existing.ManifestHash)
+		return true
+	}
+
+	if existing.SystemGeneration != c.SystemGeneration {
+		if existing.SystemGeneration > c.SystemGeneration {
+			klog.V(4).Infof("cluster has newer SystemGeneration for %q (%v vs %v), will not replace", name, existing.SystemGeneration, c.SystemGeneration)
 			return false
-		}
-		cVersion, err := semver.ParseTolerant(*c.Version)
-		if err != nil {
-			klog.Warningf("error parsing version %q; will ignore this version", *c.Version)
-			return false
-		}
-		existingVersion, err := semver.ParseTolerant(*existing.Version)
-		if err != nil {
-			klog.Warningf("error parsing existing version %q", *existing.Version)
-			return true
-		}
-		if cVersion.LT(existingVersion) {
-			klog.V(4).Infof("New Version is less then old")
-			return false
-		} else if cVersion.GT(existingVersion) {
-			klog.V(4).Infof("New Version is greater then old")
-			return true
 		} else {
-			// Same version; check ids
-			if c.Id == existing.Id {
-				// Same id; check manifests
-				if c.ManifestHash == existing.ManifestHash {
-					klog.V(4).Infof("Manifest Match")
-					return false
-				}
-				klog.V(4).Infof("Channels had same version and ids %q, %q but different ManifestHash (%q vs %q); will replace", *c.Version, c.Id, c.ManifestHash, existing.ManifestHash)
-			} else {
-				klog.V(4).Infof("Channels had same version %q but different ids (%q vs %q); will replace", *c.Version, c.Id, existing.Id)
-			}
+			klog.V(4).Infof("cluster has different SystemGeneration for %q (%v vs %v); will replace", name, existing.SystemGeneration, c.SystemGeneration)
+			return true
 		}
-	} else {
-		klog.Warningf("Existing ChannelVersion did not have a version; can't perform real version check")
 	}
 
-	if c.Version == nil {
-		klog.Warningf("New ChannelVersion did not have a version; can't perform real version check")
-		return false
-	}
-
-	return true
+	klog.V(4).Infof("manifest Match for %q: %v", name, existing)
+	return false
 }
 
-func (c *Channel) GetInstalledVersion(k8sClient kubernetes.Interface) (*ChannelVersion, error) {
-	ns, err := k8sClient.CoreV1().Namespaces().Get(c.Namespace, metav1.GetOptions{})
+func (c *Channel) GetInstalledVersion(ctx context.Context, k8sClient kubernetes.Interface) (*ChannelVersion, error) {
+	ns, err := k8sClient.CoreV1().Namespaces().Get(ctx, c.Namespace, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("error querying namespace %q: %v", c.Namespace, err)
 	}
@@ -163,16 +155,37 @@ func (c *Channel) GetInstalledVersion(k8sClient kubernetes.Interface) (*ChannelV
 	return ParseChannelVersion(annotationValue)
 }
 
+func (c *Channel) IsPKIInstalled(ctx context.Context, k8sClient kubernetes.Interface, cmClient certmanager.Interface) (bool, error) {
+	_, err := k8sClient.CoreV1().Secrets("kube-system").Get(ctx, c.Name+"-ca", metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+
+	_, err = cmClient.CertmanagerV1().Issuers("kube-system").Get(ctx, c.Name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return true, err
+	}
+
+	return true, nil
+}
+
 type annotationPatch struct {
 	Metadata annotationPatchMetadata `json:"metadata,omitempty"`
 }
+
 type annotationPatchMetadata struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
-func (c *Channel) SetInstalledVersion(k8sClient kubernetes.Interface, version *ChannelVersion) error {
+func (c *Channel) SetInstalledVersion(ctx context.Context, k8sClient kubernetes.Interface, version *ChannelVersion) error {
 	// Primarily to check it exists
-	_, err := k8sClient.CoreV1().Namespaces().Get(c.Namespace, metav1.GetOptions{})
+	_, err := k8sClient.CoreV1().Namespaces().Get(ctx, c.Namespace, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("error querying namespace %q: %v", c.Namespace, err)
 	}
@@ -190,7 +203,7 @@ func (c *Channel) SetInstalledVersion(k8sClient kubernetes.Interface, version *C
 
 	klog.V(2).Infof("sending patch: %q", string(annotationPatchJSON))
 
-	_, err = k8sClient.CoreV1().Namespaces().Patch(c.Namespace, types.StrategicMergePatchType, annotationPatchJSON)
+	_, err = k8sClient.CoreV1().Namespaces().Patch(ctx, c.Namespace, types.StrategicMergePatchType, annotationPatchJSON, metav1.PatchOptions{})
 	if err != nil {
 		return fmt.Errorf("error applying annotation to namespace: %v", err)
 	}

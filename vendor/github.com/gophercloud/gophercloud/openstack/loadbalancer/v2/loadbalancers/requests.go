@@ -2,6 +2,8 @@ package loadbalancers
 
 import (
 	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/listeners"
+	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/pools"
 	"github.com/gophercloud/gophercloud/pagination"
 )
 
@@ -28,7 +30,8 @@ type ListOpts struct {
 	ID                 string   `q:"id"`
 	OperatingStatus    string   `q:"operating_status"`
 	Name               string   `q:"name"`
-	Flavor             string   `q:"flavor"`
+	FlavorID           string   `q:"flavor_id"`
+	AvailabilityZone   string   `q:"availability_zone"`
 	Provider           string   `q:"provider"`
 	Limit              int      `q:"limit"`
 	Marker             string   `q:"marker"`
@@ -81,10 +84,16 @@ type CreateOpts struct {
 	// Human-readable description for the Loadbalancer.
 	Description string `json:"description,omitempty"`
 
+	// Providing a neutron port ID for the vip_port_id tells Octavia to use this
+	// port for the VIP. If the port has more than one subnet you must specify
+	// either the vip_subnet_id or vip_address to clarify which address should
+	// be used for the VIP.
+	VipPortID string `json:"vip_port_id,omitempty"`
+
 	// The subnet on which to allocate the Loadbalancer's address. A project can
 	// only create Loadbalancers on networks authorized by policy (e.g. networks
 	// that belong to them or networks that are shared).
-	VipSubnetID string `json:"vip_subnet_id" required:"true"`
+	VipSubnetID string `json:"vip_subnet_id,omitempty"`
 
 	// The network on which to allocate the Loadbalancer's address. A tenant can
 	// only create Loadbalancers on networks authorized by policy (e.g. networks
@@ -103,10 +112,28 @@ type CreateOpts struct {
 	AdminStateUp *bool `json:"admin_state_up,omitempty"`
 
 	// The UUID of a flavor.
-	Flavor string `json:"flavor,omitempty"`
+	FlavorID string `json:"flavor_id,omitempty"`
+
+	// The name of an Octavia availability zone.
+	// Requires Octavia API version 2.14 or later.
+	AvailabilityZone string `json:"availability_zone,omitempty"`
 
 	// The name of the provider.
 	Provider string `json:"provider,omitempty"`
+
+	// Listeners is a slice of listeners.CreateOpts which allows a set
+	// of listeners to be created at the same time the Loadbalancer is created.
+	//
+	// This is only possible to use when creating a fully populated
+	// load balancer.
+	Listeners []listeners.CreateOpts `json:"listeners,omitempty"`
+
+	// Pools is a slice of pools.CreateOpts which allows a set of pools
+	// to be created at the same time the Loadbalancer is created.
+	//
+	// This is only possible to use when creating a fully populated
+	// load balancer.
+	Pools []pools.CreateOpts `json:"pools,omitempty"`
 
 	// Tags is a set of resource tags.
 	Tags []string `json:"tags,omitempty"`
@@ -127,13 +154,15 @@ func Create(c *gophercloud.ServiceClient, opts CreateOptsBuilder) (r CreateResul
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Post(rootURL(c), b, &r.Body, nil)
+	resp, err := c.Post(rootURL(c), b, &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Get retrieves a particular Loadbalancer based on its unique ID.
 func Get(c *gophercloud.ServiceClient, id string) (r GetResult) {
-	_, r.Err = c.Get(resourceURL(c, id), &r.Body, nil)
+	resp, err := c.Get(resourceURL(c, id), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
@@ -173,9 +202,10 @@ func Update(c *gophercloud.ServiceClient, id string, opts UpdateOpts) (r UpdateR
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Put(resourceURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
+	resp, err := c.Put(resourceURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200, 202},
 	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
@@ -210,26 +240,30 @@ func Delete(c *gophercloud.ServiceClient, id string, opts DeleteOptsBuilder) (r 
 		}
 		url += query
 	}
-	_, r.Err = c.Delete(url, nil)
+	resp, err := c.Delete(url, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // GetStatuses will return the status of a particular LoadBalancer.
 func GetStatuses(c *gophercloud.ServiceClient, id string) (r GetStatusesResult) {
-	_, r.Err = c.Get(statusRootURL(c, id), &r.Body, nil)
+	resp, err := c.Get(statusRootURL(c, id), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // GetStats will return the shows the current statistics of a particular LoadBalancer.
 func GetStats(c *gophercloud.ServiceClient, id string) (r StatsResult) {
-	_, r.Err = c.Get(statisticsRootURL(c, id), &r.Body, nil)
+	resp, err := c.Get(statisticsRootURL(c, id), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Failover performs a failover of a load balancer.
 func Failover(c *gophercloud.ServiceClient, id string) (r FailoverResult) {
-	_, r.Err = c.Put(failoverRootURL(c, id), nil, nil, &gophercloud.RequestOpts{
+	resp, err := c.Put(failoverRootURL(c, id), nil, nil, &gophercloud.RequestOpts{
 		OkCodes: []int{202},
 	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }

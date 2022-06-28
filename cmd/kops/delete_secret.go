@@ -17,75 +17,80 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/kops/cmd/kops/util"
-	"k8s.io/kops/pkg/apis/kops"
-	"k8s.io/kops/upup/pkg/fi"
-	"k8s.io/kubernetes/pkg/kubectl/util/i18n"
-	"k8s.io/kubernetes/pkg/kubectl/util/templates"
+	"k8s.io/kops/pkg/commands/commandutils"
+	"k8s.io/kubectl/pkg/util/i18n"
+	"k8s.io/kubectl/pkg/util/templates"
 )
 
 var (
-	deleteSecretLong = templates.LongDesc(i18n.T(`
-		Delete a secret.`))
-
 	deleteSecretExample = templates.Examples(i18n.T(`
+	# Delete the encryptionconfig secret
+	kops delete secret encryptionconfig
 
-		`))
+	`))
 
-	deleteSecretShort = i18n.T(`Delete a secret`)
+	deleteSecretShort = i18n.T(`Delete one or more secrets.`)
 )
 
 type DeleteSecretOptions struct {
 	ClusterName string
 	SecretType  string
-	SecretName  string
-	SecretID    string
+	SecretNames []string
 }
 
 func NewCmdDeleteSecret(f *util.Factory, out io.Writer) *cobra.Command {
 	options := &DeleteSecretOptions{}
 
 	cmd := &cobra.Command{
-		Use:     "secret",
+		Use:     "secret SECRET_NAME...",
 		Short:   deleteSecretShort,
-		Long:    deleteSecretLong,
 		Example: deleteSecretExample,
-		Run: func(cmd *cobra.Command, args []string) {
-			if len(args) != 2 && len(args) != 3 {
-				exitWithError(fmt.Errorf("Syntax: <type> <name> [<id>]"))
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 && args[0] == "sshpublickey" {
+				options.SecretType = args[0]
+				return nil
 			}
 
-			options.SecretType = args[0]
-			options.SecretName = args[1]
-			if len(args) == 3 {
-				options.SecretID = args[2]
+			if len(args) > 0 && args[0] == "secret" {
+				args = args[1:]
 			}
 
-			options.ClusterName = rootCommand.ClusterName()
-
-			err := RunDeleteSecret(f, out, options)
-			if err != nil {
-				exitWithError(err)
+			if len(args) == 0 {
+				return fmt.Errorf("secret name is required")
 			}
+			if len(args) > 1 {
+				return fmt.Errorf("too many arguments")
+			}
+			options.SecretNames = args
+			options.ClusterName = rootCommand.ClusterName(true)
+
+			if options.ClusterName == "" {
+				return fmt.Errorf("--name is required")
+			}
+
+			return nil
+		},
+		ValidArgsFunction: completeSecretNames(f),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return RunDeleteSecret(context.TODO(), f, out, options)
 		},
 	}
 
 	return cmd
 }
 
-func RunDeleteSecret(f *util.Factory, out io.Writer, options *DeleteSecretOptions) error {
-	if options.ClusterName == "" {
-		return fmt.Errorf("ClusterName is required")
-	}
-	if options.SecretType == "" {
-		return fmt.Errorf("SecretType is required")
-	}
-	if options.SecretName == "" {
-		return fmt.Errorf("SecretName is required")
+func RunDeleteSecret(ctx context.Context, f *util.Factory, out io.Writer, options *DeleteSecretOptions) error {
+	if options.SecretType == "sshpublickey" {
+		return RunDeleteSSHPublicKey(ctx, f, out, &DeleteSSHPublicKeyOptions{
+			ClusterName: options.ClusterName,
+		})
 	}
 
 	clientset, err := f.Clientset()
@@ -93,12 +98,7 @@ func RunDeleteSecret(f *util.Factory, out io.Writer, options *DeleteSecretOption
 		return err
 	}
 
-	cluster, err := GetCluster(f, options.ClusterName)
-	if err != nil {
-		return err
-	}
-
-	keyStore, err := clientset.KeyStore(cluster)
+	cluster, err := GetCluster(ctx, f, options.ClusterName)
 	if err != nil {
 		return err
 	}
@@ -108,54 +108,43 @@ func RunDeleteSecret(f *util.Factory, out io.Writer, options *DeleteSecretOption
 		return err
 	}
 
-	sshCredentialStore, err := clientset.SSHCredentialStore(cluster)
-	if err != nil {
-		return err
-	}
-
-	secrets, err := listSecrets(keyStore, secretStore, sshCredentialStore, options.SecretType, []string{options.SecretName})
-	if err != nil {
-		return err
-	}
-
-	if options.SecretID != "" {
-		var matches []*fi.KeystoreItem
-		for _, s := range secrets {
-			if s.Id == options.SecretID {
-				matches = append(matches, s)
-			}
+	for _, name := range options.SecretNames {
+		err = secretStore.DeleteSecret(name)
+		if err != nil {
+			return fmt.Errorf("deleting secret %q: %v", name, err)
 		}
-		secrets = matches
-	}
-
-	if len(secrets) == 0 {
-		return fmt.Errorf("secret not found")
-	}
-
-	if len(secrets) != 1 {
-		// TODO: it would be friendly to print the matching keys
-		return fmt.Errorf("found multiple matching secrets; specify the id of the key")
-	}
-
-	switch secrets[0].Type {
-	case kops.SecretTypeSecret:
-		err = secretStore.DeleteSecret(secrets[0].Name)
-	case SecretTypeSSHPublicKey:
-		sshCredential := &kops.SSHCredential{}
-		sshCredential.Name = secrets[0].Name
-		if secrets[0].Data != nil {
-			sshCredential.Spec.PublicKey = string(secrets[0].Data)
-		}
-		err = sshCredentialStore.DeleteSSHCredential(sshCredential)
-	default:
-		keyset := &kops.Keyset{}
-		keyset.Name = secrets[0].Name
-		keyset.Spec.Type = secrets[0].Type
-		err = keyStore.DeleteKeysetItem(keyset, secrets[0].Id)
-	}
-	if err != nil {
-		return fmt.Errorf("error deleting secret: %v", err)
 	}
 
 	return nil
+}
+
+func completeSecretNames(f commandutils.Factory) func(cmd *cobra.Command, args []string, complete string) ([]string, cobra.ShellCompDirective) {
+	return func(cmd *cobra.Command, args []string, complete string) ([]string, cobra.ShellCompDirective) {
+		commandutils.ConfigureKlogForCompletion()
+		ctx := context.TODO()
+
+		cluster, clientSet, completions, directive := GetClusterForCompletion(ctx, f, nil)
+		if cluster == nil {
+			return completions, directive
+		}
+
+		secretStore, err := clientSet.SecretStore(cluster)
+		if err != nil {
+			return commandutils.CompletionError("constructing secret store", err)
+		}
+
+		alreadySelected := sets.NewString(args...)
+		var secrets []string
+		items, err := listSecrets(secretStore, nil)
+		if err != nil {
+			return commandutils.CompletionError("listing secrets", err)
+		}
+		for _, secret := range items {
+			if !alreadySelected.Has(secret) {
+				secrets = append(secrets, secret)
+			}
+		}
+
+		return secrets, cobra.ShellCompDirectiveNoFileComp
+	}
 }

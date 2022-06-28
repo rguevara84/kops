@@ -29,12 +29,15 @@ func DefaultDeltaRunMethod(e Task, c *Context) error {
 	var a Task
 	var err error
 
-	var lifecycle *Lifecycle
+	lifecycle := LifecycleSync
 	if hl, ok := e.(HasLifecycle); ok {
 		lifecycle = hl.GetLifecycle()
+		if lifecycle == "" {
+			return fmt.Errorf("task does not have a lifecycle set")
+		}
 	}
 
-	if lifecycle != nil && *lifecycle == LifecycleIgnore {
+	if lifecycle == LifecycleIgnore {
 		return nil
 	}
 
@@ -46,7 +49,7 @@ func DefaultDeltaRunMethod(e Task, c *Context) error {
 	if checkExisting {
 		a, err = invokeFind(e, c)
 		if err != nil {
-			if lifecycle != nil && *lifecycle == LifecycleWarnIfInsufficientAccess {
+			if lifecycle == LifecycleWarnIfInsufficientAccess {
 				// For now we assume all errors are permissions problems
 				// TODO: bounded retry?
 				c.AddWarning(e, fmt.Sprintf("error checking if task exists; assuming it is correctly configured: %v", err))

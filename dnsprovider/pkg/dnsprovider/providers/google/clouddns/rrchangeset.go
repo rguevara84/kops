@@ -17,6 +17,7 @@ limitations under the License.
 package clouddns
 
 import (
+	"context"
 	"fmt"
 
 	"k8s.io/kops/dnsprovider/pkg/dnsprovider"
@@ -49,7 +50,12 @@ func (c *ResourceRecordChangeset) Upsert(rrset dnsprovider.ResourceRecordSet) dn
 	return c
 }
 
-func (c *ResourceRecordChangeset) Apply() error {
+func (c *ResourceRecordChangeset) Apply(ctx context.Context) error {
+	// Empty changesets should be a relatively quick no-op
+	if c.IsEmpty() {
+		return nil
+	}
+
 	rrsets := c.rrsets
 
 	service := rrsets.zone.zones.interface_.service.Changes()
@@ -104,18 +110,18 @@ func (c *ResourceRecordChangeset) Apply() error {
 	}
 	newAdditions := newChange.Additions()
 	if len(newAdditions) != len(additions) {
-		return fmt.Errorf("Internal error when adding resource record set.  Call succeeded but number of records returned is incorrect.  Records sent=%d, records returned=%d, additions:%v", len(additions), len(newAdditions), c.additions)
+		return fmt.Errorf("internal error when adding resource record set.  Call succeeded but number of records returned is incorrect.  Records sent=%d, records returned=%d, additions:%v", len(additions), len(newAdditions), c.additions)
 	}
 	newDeletions := newChange.Deletions()
 	if len(newDeletions) != len(deletions) {
-		return fmt.Errorf("Internal error when deleting resource record set.  Call succeeded but number of records returned is incorrect.  Records sent=%d, records returned=%d, deletions:%v", len(deletions), len(newDeletions), c.removals)
+		return fmt.Errorf("internal error when deleting resource record set.  Call succeeded but number of records returned is incorrect.  Records sent=%d, records returned=%d, deletions:%v", len(deletions), len(newDeletions), c.removals)
 	}
 
 	return nil
 }
 
 func (c *ResourceRecordChangeset) IsEmpty() bool {
-	return len(c.additions) == 0 && len(c.removals) == 0
+	return len(c.additions) == 0 && len(c.removals) == 0 && len(c.upserts) == 0
 }
 
 // ResourceRecordSets returns the parent ResourceRecordSets

@@ -14,13 +14,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-. $(dirname "${BASH_SOURCE}")/common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-GOFMT="bazel run //:gofmt -- -s -w"
+cd "${KOPS_ROOT}" || exit 1
 
-bad_files=$(git ls-files "*.go" | grep -v vendor | xargs $GOFMT -l)
+bad_files=$(git ls-files "*.go" | grep -v vendor | xargs gofmt -s -w -l)
 if [[ -n "${bad_files}" ]]; then
-  echo "FAIL: '$GOFMT' needs to be run on the following files: "
+  echo "FAIL: 'make gofmt' needs to be run on the following files: "
   echo "${bad_files}"
   echo "FAIL: please execute make gofmt"
   exit 1

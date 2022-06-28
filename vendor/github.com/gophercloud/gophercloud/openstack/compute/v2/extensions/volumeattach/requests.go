@@ -26,6 +26,14 @@ type CreateOpts struct {
 
 	// VolumeID is the ID of the volume to attach to the instance.
 	VolumeID string `json:"volumeId" required:"true"`
+
+	// Tag is a device role tag that can be applied to a volume when attaching
+	// it to the VM. Requires 2.49 microversion
+	Tag string `json:"tag,omitempty"`
+
+	// DeleteOnTermination specifies whether or not to delete the volume when the server
+	// is destroyed. Requires 2.79 microversion
+	DeleteOnTermination bool `json:"delete_on_termination,omitempty"`
 }
 
 // ToVolumeAttachmentCreateMap constructs a request body from CreateOpts.
@@ -40,21 +48,24 @@ func Create(client *gophercloud.ServiceClient, serverID string, opts CreateOptsB
 		r.Err = err
 		return
 	}
-	_, r.Err = client.Post(createURL(client, serverID), b, &r.Body, &gophercloud.RequestOpts{
+	resp, err := client.Post(createURL(client, serverID), b, &r.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200},
 	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Get returns public data about a previously created VolumeAttachment.
 func Get(client *gophercloud.ServiceClient, serverID, attachmentID string) (r GetResult) {
-	_, r.Err = client.Get(getURL(client, serverID, attachmentID), &r.Body, nil)
+	resp, err := client.Get(getURL(client, serverID, attachmentID), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Delete requests the deletion of a previous stored VolumeAttachment from
 // the server.
 func Delete(client *gophercloud.ServiceClient, serverID, attachmentID string) (r DeleteResult) {
-	_, r.Err = client.Delete(deleteURL(client, serverID, attachmentID), nil)
+	resp, err := client.Delete(deleteURL(client, serverID, attachmentID), nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }

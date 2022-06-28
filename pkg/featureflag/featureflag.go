@@ -29,7 +29,7 @@ import (
 	"strings"
 	"sync"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -47,43 +47,51 @@ var (
 )
 
 var (
-	// DNSPreCreate controls whether we pre-create DNS records.
-	DNSPreCreate = New("DNSPreCreate", Bool(true))
-	// DrainAndValidateRollingUpdate if set will use new rolling update code that will drain and validate.
-	DrainAndValidateRollingUpdate = New("DrainAndValidateRollingUpdate", Bool(true))
-	// EnableLaunchTemplates indicates we wish to switch to using launch templates rather than launchconfigurations
-	EnableLaunchTemplates = New("EnableLaunchTemplates", Bool(false))
-	//EnableExternalCloudController toggles the use of cloud-controller-manager introduced in v1.7
-	EnableExternalCloudController = New("EnableExternalCloudController", Bool(false))
-	// EnableExternalDNS enables external DNS
-	EnableExternalDNS = New("EnableExternalDNS", Bool(false))
-	// EnableNodeAuthorization enables the node authorization features
-	EnableNodeAuthorization = New("EnableNodeAuthorization", Bool(false))
+	// CacheNodeidentityInfo enables NodeidentityInfo caching
+	// in order to reduce the number of EC2 DescribeInstance calls.
+	CacheNodeidentityInfo = new("CacheNodeidentityInfo", Bool(false))
 	// EnableSeparateConfigBase allows a config-base that is different from the state store
-	EnableSeparateConfigBase = New("EnableSeparateConfigBase", Bool(false))
+	EnableSeparateConfigBase = new("EnableSeparateConfigBase", Bool(false))
 	// ExperimentalClusterDNS allows for setting the kubelet dns flag to experimental values.
-	ExperimentalClusterDNS = New("ExperimentalClusterDNS", Bool(false))
+	ExperimentalClusterDNS = new("ExperimentalClusterDNS", Bool(false))
 	// GoogleCloudBucketACL means the ACL will be set on a bucket when using GCS
-	GoogleCloudBucketACL = New("GoogleCloudBucketAcl", Bool(false))
-	// KeepLaunchConfigurations can be set to prevent garbage collection of old launch configurations
-	KeepLaunchConfigurations = New("KeepLaunchConfigurations", Bool(false))
-	// SkipTerraformFormat if set means we will not `tf fmt` the generated terraform.
-	// However we should no longer need it, with the keyset.yaml fix
-	// In particular, this is the only (?) way to grant the bucket.list permission
-	// It allows for experiments with alternative DNS configurations - in particular local proxies.
-	SkipTerraformFormat = New("SkipTerraformFormat", Bool(false))
+	GoogleCloudBucketACL = new("GoogleCloudBucketAcl", Bool(false))
 	// SpecOverrideFlag allows setting spec values on create
-	SpecOverrideFlag = New("SpecOverrideFlag", Bool(false))
+	SpecOverrideFlag = new("SpecOverrideFlag", Bool(false))
 	// Spotinst toggles the use of Spotinst integration.
-	Spotinst = New("Spotinst", Bool(false))
+	Spotinst = new("Spotinst", Bool(false))
 	// SpotinstOcean toggles the use of Spotinst Ocean instance group implementation.
-	SpotinstOcean = New("SpotinstOcean", Bool(false))
+	SpotinstOcean = new("SpotinstOcean", Bool(false))
+	// SpotinstOceanTemplate toggles the use of Spotinst Ocean object as a template for Virtual Node Groups.
+	SpotinstOceanTemplate = new("SpotinstOceanTemplate", Bool(false))
+	// SpotinstHybrid toggles between hybrid and full instance group implementations.
+	SpotinstHybrid = new("SpotinstHybrid", Bool(false))
+	// SpotinstController toggles the installation of the Spotinst controller addon.
+	SpotinstController = new("SpotinstController", Bool(true))
+	// VFSVaultSupport enables setting Vault as secret/keystore
+	VFSVaultSupport = new("VFSVaultSupport", Bool(false))
 	// VPCSkipEnableDNSSupport if set will make that a VPC does not need DNSSupport enabled.
-	VPCSkipEnableDNSSupport = New("VPCSkipEnableDNSSupport", Bool(false))
-	// VSphereCloudProvider enables the vsphere cloud provider
-	VSphereCloudProvider = New("VSphereCloudProvider", Bool(false))
+	VPCSkipEnableDNSSupport = new("VPCSkipEnableDNSSupport", Bool(false))
 	// SkipEtcdVersionCheck will bypass the check that etcd-manager is using a supported etcd version
-	SkipEtcdVersionCheck = New("SkipEtcdVersionCheck", Bool(false))
+	SkipEtcdVersionCheck = new("SkipEtcdVersionCheck", Bool(false))
+	// ClusterAddons activates experimental cluster-addons support
+	ClusterAddons = new("ClusterAddons", Bool(false))
+	// Azure toggles the Azure support.
+	Azure = new("Azure", Bool(false))
+	// KopsControllerStateStore enables fetching the kops state from kops-controller, instead of requiring access to S3/GCS/etc.
+	KopsControllerStateStore = new("KopsControllerStateStore", Bool(false))
+	// APIServerNodes enables ability to provision nodes that only run the kube-apiserver.
+	APIServerNodes = new("APIServerNodes", Bool(false))
+	// UseAddonOperators activates experimental addon operator support
+	UseAddonOperators = new("UseAddonOperators", Bool(false))
+	// TerraformManagedFiles enables rendering managed files into the Terraform configuration.
+	TerraformManagedFiles = new("TerraformManagedFiles", Bool(true))
+	// Karpenter enables karpenter-managed Instance Groups
+	Karpenter = new("Karpenter", Bool(false))
+	// ImageDigest remaps all manifests with image digests
+	ImageDigest = new("ImageDigest", Bool(true))
+	// Hetzner toggles the Hetzner Cloud support.
+	Hetzner = new("Hetzner", Bool(false))
 )
 
 // FeatureFlag defines a feature flag
@@ -93,8 +101,8 @@ type FeatureFlag struct {
 	defaultValue *bool
 }
 
-// New creates a new feature flag
-func New(key string, defaultValue *bool) *FeatureFlag {
+// new creates a new feature flag
+func new(key string, defaultValue *bool) *FeatureFlag {
 	flagsMutex.Lock()
 	defer flagsMutex.Unlock()
 
@@ -131,6 +139,9 @@ func Bool(b bool) *bool {
 
 // ParseFlags responsible for parse out the feature flag usage
 func ParseFlags(f string) {
+	flagsMutex.Lock()
+	defer flagsMutex.Unlock()
+
 	f = strings.TrimSpace(f)
 	for _, s := range strings.Split(f, ",") {
 		s = strings.TrimSpace(s)
@@ -140,14 +151,18 @@ func ParseFlags(f string) {
 		enabled := true
 		var ff *FeatureFlag
 		if s[0] == '+' || s[0] == '-' {
-			ff = New(s[1:], nil)
+			ff = flags[s[1:]]
 			if s[0] == '-' {
 				enabled = false
 			}
 		} else {
-			ff = New(s, nil)
+			ff = flags[s]
 		}
-		klog.Infof("FeatureFlag %q=%v", ff.Key, enabled)
-		ff.enabled = &enabled
+		if ff != nil {
+			klog.Infof("FeatureFlag %q=%v", ff.Key, enabled)
+			ff.enabled = &enabled
+		} else {
+			klog.Infof("Unknown FeatureFlag %q", s)
+		}
 	}
 }

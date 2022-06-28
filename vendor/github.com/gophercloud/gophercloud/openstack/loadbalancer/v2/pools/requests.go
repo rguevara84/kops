@@ -2,6 +2,7 @@ package pools
 
 import (
 	"github.com/gophercloud/gophercloud"
+	"github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/monitors"
 	"github.com/gophercloud/gophercloud/pagination"
 )
 
@@ -64,12 +65,17 @@ const (
 	LBMethodRoundRobin       LBMethod = "ROUND_ROBIN"
 	LBMethodLeastConnections LBMethod = "LEAST_CONNECTIONS"
 	LBMethodSourceIp         LBMethod = "SOURCE_IP"
+	LBMethodSourceIpPort     LBMethod = "SOURCE_IP_PORT"
 
 	ProtocolTCP   Protocol = "TCP"
 	ProtocolUDP   Protocol = "UDP"
 	ProtocolPROXY Protocol = "PROXY"
 	ProtocolHTTP  Protocol = "HTTP"
 	ProtocolHTTPS Protocol = "HTTPS"
+	// Protocol PROXYV2 requires octavia microversion 2.22
+	ProtocolPROXYV2 Protocol = "PROXYV2"
+	// Protocol SCTP requires octavia microversion 2.23
+	ProtocolSCTP Protocol = "SCTP"
 )
 
 // CreateOptsBuilder allows extensions to add additional parameters to the
@@ -82,21 +88,22 @@ type CreateOptsBuilder interface {
 // operation.
 type CreateOpts struct {
 	// The algorithm used to distribute load between the members of the pool. The
-	// current specification supports LBMethodRoundRobin, LBMethodLeastConnections
-	// and LBMethodSourceIp as valid values for this attribute.
+	// current specification supports LBMethodRoundRobin, LBMethodLeastConnections,
+	// LBMethodSourceIp and LBMethodSourceIpPort as valid values for this attribute.
 	LBMethod LBMethod `json:"lb_algorithm" required:"true"`
 
 	// The protocol used by the pool members, you can use either
-	// ProtocolTCP, ProtocolUDP, ProtocolPROXY, ProtocolHTTP, or ProtocolHTTPS.
+	// ProtocolTCP, ProtocolUDP, ProtocolPROXY, ProtocolHTTP, ProtocolHTTPS,
+	// ProtocolSCTP or ProtocolPROXYV2.
 	Protocol Protocol `json:"protocol" required:"true"`
 
 	// The Loadbalancer on which the members of the pool will be associated with.
 	// Note: one of LoadbalancerID or ListenerID must be provided.
-	LoadbalancerID string `json:"loadbalancer_id,omitempty" xor:"ListenerID"`
+	LoadbalancerID string `json:"loadbalancer_id,omitempty"`
 
 	// The Listener on which the members of the pool will be associated with.
 	// Note: one of LoadbalancerID or ListenerID must be provided.
-	ListenerID string `json:"listener_id,omitempty" xor:"LoadbalancerID"`
+	ListenerID string `json:"listener_id,omitempty"`
 
 	// ProjectID is the UUID of the project who owns the Pool.
 	// Only administrative users can specify a project UUID other than their own.
@@ -115,6 +122,23 @@ type CreateOpts struct {
 	// The administrative state of the Pool. A valid value is true (UP)
 	// or false (DOWN).
 	AdminStateUp *bool `json:"admin_state_up,omitempty"`
+
+	// Members is a slice of BatchUpdateMemberOpts which allows a set of
+	// members to be created at the same time the pool is created.
+	//
+	// This is only possible to use when creating a fully populated
+	// Loadbalancer.
+	Members []BatchUpdateMemberOpts `json:"members,omitempty"`
+
+	// Monitor is an instance of monitors.CreateOpts which allows a monitor
+	// to be created at the same time the pool is created.
+	//
+	// This is only possible to use when creating a fully populated
+	// Loadbalancer.
+	Monitor *monitors.CreateOpts `json:"healthmonitor,omitempty"`
+
+	// Tags is a set of resource tags. New in version 2.5
+	Tags []string `json:"tags,omitempty"`
 }
 
 // ToPoolCreateMap builds a request body from CreateOpts.
@@ -130,13 +154,15 @@ func Create(c *gophercloud.ServiceClient, opts CreateOptsBuilder) (r CreateResul
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Post(rootURL(c), b, &r.Body, nil)
+	resp, err := c.Post(rootURL(c), b, &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Get retrieves a particular pool based on its unique ID.
 func Get(c *gophercloud.ServiceClient, id string) (r GetResult) {
-	_, r.Err = c.Get(resourceURL(c, id), &r.Body, nil)
+	resp, err := c.Get(resourceURL(c, id), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
@@ -156,13 +182,16 @@ type UpdateOpts struct {
 	Description *string `json:"description,omitempty"`
 
 	// The algorithm used to distribute load between the members of the pool. The
-	// current specification supports LBMethodRoundRobin, LBMethodLeastConnections
-	// and LBMethodSourceIp as valid values for this attribute.
+	// current specification supports LBMethodRoundRobin, LBMethodLeastConnections,
+	// LBMethodSourceIp and LBMethodSourceIpPort as valid values for this attribute.
 	LBMethod LBMethod `json:"lb_algorithm,omitempty"`
 
 	// The administrative state of the Pool. A valid value is true (UP)
 	// or false (DOWN).
 	AdminStateUp *bool `json:"admin_state_up,omitempty"`
+
+	// Tags is a set of resource tags. New in version 2.5
+	Tags *[]string `json:"tags,omitempty"`
 }
 
 // ToPoolUpdateMap builds a request body from UpdateOpts.
@@ -177,15 +206,17 @@ func Update(c *gophercloud.ServiceClient, id string, opts UpdateOptsBuilder) (r 
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Put(resourceURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
+	resp, err := c.Put(resourceURL(c, id), b, &r.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200},
 	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // Delete will permanently delete a particular pool based on its unique ID.
 func Delete(c *gophercloud.ServiceClient, id string) (r DeleteResult) {
-	_, r.Err = c.Delete(resourceURL(c, id), nil)
+	resp, err := c.Delete(resourceURL(c, id), nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
@@ -275,6 +306,21 @@ type CreateMemberOpts struct {
 	// The administrative state of the Pool. A valid value is true (UP)
 	// or false (DOWN).
 	AdminStateUp *bool `json:"admin_state_up,omitempty"`
+
+	// Is the member a backup? Backup members only receive traffic when all
+	// non-backup members are down.
+	// Requires microversion 2.1 or later.
+	Backup *bool `json:"backup,omitempty"`
+
+	// An alternate IP address used for health monitoring a backend member.
+	MonitorAddress string `json:"monitor_address,omitempty"`
+
+	// An alternate protocol port used for health monitoring a backend member.
+	MonitorPort *int `json:"monitor_port,omitempty"`
+
+	// A list of simple strings assigned to the resource.
+	// Requires microversion 2.5 or later.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // ToMemberCreateMap builds a request body from CreateMemberOpts.
@@ -283,19 +329,21 @@ func (opts CreateMemberOpts) ToMemberCreateMap() (map[string]interface{}, error)
 }
 
 // CreateMember will create and associate a Member with a particular Pool.
-func CreateMember(c *gophercloud.ServiceClient, poolID string, opts CreateMemberOpts) (r CreateMemberResult) {
+func CreateMember(c *gophercloud.ServiceClient, poolID string, opts CreateMemberOptsBuilder) (r CreateMemberResult) {
 	b, err := opts.ToMemberCreateMap()
 	if err != nil {
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Post(memberRootURL(c, poolID), b, &r.Body, nil)
+	resp, err := c.Post(memberRootURL(c, poolID), b, &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
 // GetMember retrieves a particular Pool Member based on its unique ID.
 func GetMember(c *gophercloud.ServiceClient, poolID string, memberID string) (r GetMemberResult) {
-	_, r.Err = c.Get(memberResourceURL(c, poolID, memberID), &r.Body, nil)
+	resp, err := c.Get(memberResourceURL(c, poolID, memberID), &r.Body, nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
@@ -320,6 +368,21 @@ type UpdateMemberOpts struct {
 	// The administrative state of the Pool. A valid value is true (UP)
 	// or false (DOWN).
 	AdminStateUp *bool `json:"admin_state_up,omitempty"`
+
+	// Is the member a backup? Backup members only receive traffic when all
+	// non-backup members are down.
+	// Requires microversion 2.1 or later.
+	Backup *bool `json:"backup,omitempty"`
+
+	// An alternate IP address used for health monitoring a backend member.
+	MonitorAddress *string `json:"monitor_address,omitempty"`
+
+	// An alternate protocol port used for health monitoring a backend member.
+	MonitorPort *int `json:"monitor_port,omitempty"`
+
+	// A list of simple strings assigned to the resource.
+	// Requires microversion 2.5 or later.
+	Tags []string `json:"tags,omitempty"`
 }
 
 // ToMemberUpdateMap builds a request body from UpdateMemberOpts.
@@ -334,9 +397,10 @@ func UpdateMember(c *gophercloud.ServiceClient, poolID string, memberID string, 
 		r.Err = err
 		return
 	}
-	_, r.Err = c.Put(memberResourceURL(c, poolID, memberID), b, &r.Body, &gophercloud.RequestOpts{
+	resp, err := c.Put(memberResourceURL(c, poolID, memberID), b, &r.Body, &gophercloud.RequestOpts{
 		OkCodes: []int{200, 201, 202},
 	})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
@@ -345,16 +409,69 @@ type BatchUpdateMemberOptsBuilder interface {
 	ToBatchMemberUpdateMap() (map[string]interface{}, error)
 }
 
-type BatchUpdateMemberOpts CreateMemberOpts
+// BatchUpdateMemberOpts is the common options struct used in this package's BatchUpdateMembers
+// operation.
+type BatchUpdateMemberOpts struct {
+	// The IP address of the member to receive traffic from the load balancer.
+	Address string `json:"address" required:"true"`
+
+	// The port on which to listen for client traffic.
+	ProtocolPort int `json:"protocol_port" required:"true"`
+
+	// Name of the Member.
+	Name *string `json:"name,omitempty"`
+
+	// ProjectID is the UUID of the project who owns the Member.
+	// Only administrative users can specify a project UUID other than their own.
+	ProjectID string `json:"project_id,omitempty"`
+
+	// A positive integer value that indicates the relative portion of traffic
+	// that this member should receive from the pool. For example, a member with
+	// a weight of 10 receives five times as much traffic as a member with a
+	// weight of 2.
+	Weight *int `json:"weight,omitempty"`
+
+	// If you omit this parameter, LBaaS uses the vip_subnet_id parameter value
+	// for the subnet UUID.
+	SubnetID *string `json:"subnet_id,omitempty"`
+
+	// The administrative state of the Pool. A valid value is true (UP)
+	// or false (DOWN).
+	AdminStateUp *bool `json:"admin_state_up,omitempty"`
+
+	// Is the member a backup? Backup members only receive traffic when all
+	// non-backup members are down.
+	// Requires microversion 2.1 or later.
+	Backup *bool `json:"backup,omitempty"`
+
+	// An alternate IP address used for health monitoring a backend member.
+	MonitorAddress *string `json:"monitor_address,omitempty"`
+
+	// An alternate protocol port used for health monitoring a backend member.
+	MonitorPort *int `json:"monitor_port,omitempty"`
+
+	// A list of simple strings assigned to the resource.
+	// Requires microversion 2.5 or later.
+	Tags []string `json:"tags,omitempty"`
+}
 
 // ToBatchMemberUpdateMap builds a request body from BatchUpdateMemberOpts.
 func (opts BatchUpdateMemberOpts) ToBatchMemberUpdateMap() (map[string]interface{}, error) {
-	return gophercloud.BuildRequestBody(opts, "")
+	b, err := gophercloud.BuildRequestBody(opts, "")
+	if err != nil {
+		return nil, err
+	}
+
+	if b["subnet_id"] == "" {
+		b["subnet_id"] = nil
+	}
+
+	return b, nil
 }
 
 // BatchUpdateMembers updates the pool members in batch
 func BatchUpdateMembers(c *gophercloud.ServiceClient, poolID string, opts []BatchUpdateMemberOpts) (r UpdateMembersResult) {
-	var members []map[string]interface{}
+	members := []map[string]interface{}{}
 	for _, opt := range opts {
 		b, err := opt.ToBatchMemberUpdateMap()
 		if err != nil {
@@ -366,13 +483,14 @@ func BatchUpdateMembers(c *gophercloud.ServiceClient, poolID string, opts []Batc
 
 	b := map[string]interface{}{"members": members}
 
-	_, r.Err = c.Put(memberRootURL(c, poolID), b, nil, &gophercloud.RequestOpts{OkCodes: []int{202}})
+	resp, err := c.Put(memberRootURL(c, poolID), b, nil, &gophercloud.RequestOpts{OkCodes: []int{202}})
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }
 
-// DisassociateMember will remove and disassociate a Member from a particular
-// Pool.
+// DeleteMember will remove and disassociate a Member from a particular Pool.
 func DeleteMember(c *gophercloud.ServiceClient, poolID string, memberID string) (r DeleteMemberResult) {
-	_, r.Err = c.Delete(memberResourceURL(c, poolID, memberID), nil)
+	resp, err := c.Delete(memberResourceURL(c, poolID, memberID), nil)
+	_, r.Header, r.Err = gophercloud.ParseResponse(resp, err)
 	return
 }

@@ -30,7 +30,7 @@ func TestListVPCs(t *testing.T) {
 	h := testutils.NewIntegrationTestHarness(t)
 	defer h.Close()
 
-	h.MockKopsVersion("1.8.1")
+	h.MockKopsVersion("1.21.0-alpha.1")
 	awsCloud := h.SetupMockAWS()
 
 	mockEC2 := awsCloud.EC2().(*mockec2.MockEC2)

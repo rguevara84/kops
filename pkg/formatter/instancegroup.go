@@ -19,7 +19,7 @@ package formatter
 import (
 	"strings"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/model"
 )
@@ -27,14 +27,14 @@ import (
 // InstanceGroupRenderFunction is a render function for an InstanceGroup
 type InstanceGroupRenderFunction func(ig *kops.InstanceGroup) string
 
-//RenderInstanceGroupSubnets renders the subnet names for an InstanceGroup
+// RenderInstanceGroupSubnets renders the subnet names for an InstanceGroup
 func RenderInstanceGroupSubnets(cluster *kops.Cluster) InstanceGroupRenderFunction {
 	return func(ig *kops.InstanceGroup) string {
 		return strings.Join(ig.Spec.Subnets, ",")
 	}
 }
 
-//RenderInstanceGroupZones renders the zone names for an InstanceGroup
+// RenderInstanceGroupZones renders the zone names for an InstanceGroup
 func RenderInstanceGroupZones(cluster *kops.Cluster) InstanceGroupRenderFunction {
 	return func(ig *kops.InstanceGroup) string {
 		zones, err := model.FindZonesForInstanceGroup(cluster, ig)

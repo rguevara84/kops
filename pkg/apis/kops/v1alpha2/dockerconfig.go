@@ -28,12 +28,18 @@ type DockerConfig struct {
 	DataRoot *string `json:"dataRoot,omitempty" flag:"data-root"`
 	// DefaultUlimit is the ulimits for containers
 	DefaultUlimit []string `json:"defaultUlimit,omitempty" flag:"default-ulimit,repeat"`
+	// DefaultRuntime is the default OCI runtime for containers (default "runc")
+	DefaultRuntime *string `json:"defaultRuntime,omitempty" flag:"default-runtime"`
+	// DNS is the IP address of the DNS server
+	DNS []string `json:"dns,omitempty" flag:"dns,repeat"`
 	// ExecOpt is a series of options passed to the runtime
 	ExecOpt []string `json:"execOpt,omitempty" flag:"exec-opt,repeat"`
 	// ExecRoot is the root directory for execution state files (default "/var/run/docker")
 	ExecRoot *string `json:"execRoot,omitempty" flag:"exec-root"`
 	// Experimental features permits enabling new features such as dockerd metrics
 	Experimental *bool `json:"experimental,omitempty" flag:"experimental"`
+	// HealthCheck enables the periodic health-check service
+	HealthCheck bool `json:"healthCheck,omitempty"`
 	// Hosts enables you to configure the endpoints the docker daemon listens on i.e. tcp://0.0.0.0.2375 or unix:///var/run/docker.sock etc
 	Hosts []string `json:"hosts,omitempty" flag:"host,repeat"`
 	// IPMasq enables ip masquerading for containers
@@ -43,7 +49,7 @@ type DockerConfig struct {
 	// InsecureRegistry enable insecure registry communication @question according to dockers this a list??
 	InsecureRegistry *string `json:"insecureRegistry,omitempty" flag:"insecure-registry"`
 	// InsecureRegistries enables multiple insecure docker registry communications
-	InsecureRegistries []string `json:"insecureRegistries,omitempty" flag:"insecure-registry"`
+	InsecureRegistries []string `json:"insecureRegistries,omitempty" flag:"insecure-registry,repeat"`
 	// LiveRestore enables live restore of docker when containers are still running
 	LiveRestore *bool `json:"liveRestore,omitempty" flag:"live-restore"`
 	// LogDriver is the default driver for container logs (default "json-file")
@@ -52,12 +58,24 @@ type DockerConfig struct {
 	LogLevel *string `json:"logLevel,omitempty" flag:"log-level"`
 	// Logopt is a series of options given to the log driver options for containers
 	LogOpt []string `json:"logOpt,omitempty" flag:"log-opt,repeat"`
+	// MaxConcurrentDownloads sets the max concurrent downloads for each pull
+	MaxConcurrentDownloads *int32 `json:"maxConcurrentDownloads,omitempty" flag:"max-concurrent-downloads"`
+	// MaxConcurrentUploads sets the max concurrent uploads for each push
+	MaxConcurrentUploads *int32 `json:"maxConcurrentUploads,omitempty" flag:"max-concurrent-uploads"`
+	// MaxDownloadAttempts sets the max download attempts for each pull
+	MaxDownloadAttempts *int32 `json:"maxDownloadAttempts,omitempty" flag:"max-download-attempts"`
 	// Metrics address is the endpoint to serve with Prometheus format metrics
 	MetricsAddress *string `json:"metricsAddress,omitempty" flag:"metrics-addr"`
 	// MTU is the containers network MTU
 	MTU *int32 `json:"mtu,omitempty" flag:"mtu"`
+	// Packages overrides the URL and hash for the packages.
+	Packages *PackagesConfig `json:"packages,omitempty"`
 	// RegistryMirrors is a referred list of docker registry mirror
 	RegistryMirrors []string `json:"registryMirrors,omitempty" flag:"registry-mirror,repeat"`
+	// Runtimes registers an additional OCI compatible runtime (default [])
+	Runtimes []string `json:"runtimes,omitempty" flag:"add-runtime,repeat"`
+	// SelinuxEnabled enables SELinux support
+	SelinuxEnabled *bool `json:"selinuxEnabled,omitempty" flag:"selinux-enabled"`
 	// SkipInstall when set to true will prevent kops from installing and modifying Docker in any way
 	SkipInstall bool `json:"skipInstall,omitempty"`
 	// Storage is the docker storage driver to use

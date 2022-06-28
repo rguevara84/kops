@@ -3,5 +3,6 @@ Zones:
 - us-test-1a
 - us-test-1b
 MasterCount: 5
-Cloud: aws
-KubernetesVersion: v1.4.8
+CloudProvider: aws
+Networking: cni
+KubernetesVersion: v1.21.0

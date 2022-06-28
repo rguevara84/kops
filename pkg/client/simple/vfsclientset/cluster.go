@@ -29,10 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	api "k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/pkg/apis/kops/registry"
-	"k8s.io/kops/pkg/apis/kops/v1alpha1"
 	"k8s.io/kops/pkg/apis/kops/validation"
 	"k8s.io/kops/util/pkg/vfs"
 )
@@ -44,8 +43,6 @@ type ClusterVFS struct {
 func newClusterVFS(basePath vfs.Path) *ClusterVFS {
 	c := &ClusterVFS{}
 	c.init("Cluster", basePath, StoreVersion)
-	defaultReadVersion := v1alpha1.SchemeGroupVersion.WithKind("Cluster")
-	c.defaultReadVersion = &defaultReadVersion
 	return c
 }
 
@@ -99,8 +96,8 @@ func (c *ClusterVFS) List(options metav1.ListOptions) (*api.ClusterList, error) 
 }
 
 func (r *ClusterVFS) Create(c *api.Cluster) (*api.Cluster, error) {
-	if err := validation.ValidateCluster(c, false); err != nil {
-		return nil, err
+	if errs := validation.ValidateCluster(c, false); len(errs) != 0 {
+		return nil, errs.ToAggregate()
 	}
 
 	if c.ObjectMeta.CreationTimestamp.IsZero() {
@@ -125,7 +122,7 @@ func (r *ClusterVFS) Create(c *api.Cluster) (*api.Cluster, error) {
 func (r *ClusterVFS) Update(c *api.Cluster, status *api.ClusterStatus) (*api.Cluster, error) {
 	clusterName := c.ObjectMeta.Name
 	if clusterName == "" {
-		return nil, field.Required(field.NewPath("Name"), "clusterName is required")
+		return nil, field.Required(field.NewPath("objectMeta", "name"), "clusterName is required")
 	}
 
 	old, err := r.Get(clusterName, metav1.GetOptions{})

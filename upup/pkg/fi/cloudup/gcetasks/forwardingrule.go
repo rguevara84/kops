@@ -19,23 +19,34 @@ package gcetasks
 import (
 	"fmt"
 
-	compute "google.golang.org/api/compute/v0.beta"
-	"k8s.io/klog"
+	compute "google.golang.org/api/compute/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gce"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 )
 
 // ForwardingRule represents a GCE ForwardingRule
-//go:generate fitask -type=ForwardingRule
+// +kops:fitask
 type ForwardingRule struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 
-	PortRange  string
+	PortRange  *string
+	Ports      []string
 	TargetPool *TargetPool
-	IPAddress  *Address
-	IPProtocol string
+	// An IP address can be specified either in dotted decimal
+	// or by reference to an address object.  The following two
+	// fields are mutually exclusive.
+	IPAddress     *Address
+	RuleIPAddress *string
+
+	IPProtocol          string
+	LoadBalancingScheme *string
+	Network             *Network
+	Subnetwork          *Subnet
+	BackendService      *BackendService
 }
 
 var _ fi.CompareWithID = &ForwardingRule{}
@@ -48,7 +59,7 @@ func (e *ForwardingRule) Find(c *fi.Context) (*ForwardingRule, error) {
 	cloud := c.Cloud.(gce.GCECloud)
 	name := fi.StringValue(e.Name)
 
-	r, err := cloud.Compute().ForwardingRules.Get(cloud.Project(), cloud.Region(), name).Do()
+	r, err := cloud.Compute().ForwardingRules().Get(cloud.Project(), cloud.Region(), name)
 	if err != nil {
 		if gce.IsNotFound(err) {
 			return nil, nil
@@ -58,9 +69,15 @@ func (e *ForwardingRule) Find(c *fi.Context) (*ForwardingRule, error) {
 
 	actual := &ForwardingRule{
 		Name:       fi.String(r.Name),
-		PortRange:  r.PortRange,
 		IPProtocol: r.IPProtocol,
 	}
+	if r.PortRange != "" {
+		actual.PortRange = &r.PortRange
+	}
+	if len(r.Ports) > 0 {
+		actual.Ports = r.Ports
+	}
+
 	if r.Target != "" {
 		actual.TargetPool = &TargetPool{
 			Name: fi.String(lastComponent(r.Target)),
@@ -96,12 +113,28 @@ func (_ *ForwardingRule) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Forwardin
 
 	o := &compute.ForwardingRule{
 		Name:       name,
-		PortRange:  e.PortRange,
 		IPProtocol: e.IPProtocol,
+	}
+	if e.PortRange != nil {
+		o.PortRange = *e.PortRange
+	}
+	if len(e.Ports) > 0 {
+		o.Ports = e.Ports
+	}
+
+	if e.LoadBalancingScheme != nil {
+		o.LoadBalancingScheme = *e.LoadBalancingScheme
 	}
 
 	if e.TargetPool != nil {
 		o.Target = e.TargetPool.URL(t.Cloud)
+	}
+
+	if e.BackendService != nil {
+		if o.Target != "" {
+			return fmt.Errorf("cannot specify both %q and %q for forwarding rule target.", o.Target, e.BackendService)
+		}
+		o.BackendService = e.BackendService.URL(t.Cloud)
 	}
 
 	if e.IPAddress != nil {
@@ -121,52 +154,99 @@ func (_ *ForwardingRule) RenderGCE(t *gce.GCEAPITarget, a, e, changes *Forwardin
 			}
 		}
 	}
+	if o.IPAddress != "" && e.RuleIPAddress != nil {
+		return fmt.Errorf("Specified both IP Address and rule-managed IP address: %v, %v", e.IPAddress, *e.RuleIPAddress)
+	}
+	if e.RuleIPAddress != nil {
+		o.IPAddress = *e.RuleIPAddress
+	}
+
+	if e.Network != nil {
+		project := t.Cloud.Project()
+		if e.Network.Project != nil {
+			project = *e.Network.Project
+		}
+		o.Network = e.Network.URL(project)
+	}
+
+	if e.Subnetwork != nil {
+		project := t.Cloud.Project()
+		if e.Network.Project != nil {
+			project = *e.Network.Project
+		}
+		o.Subnetwork = e.Subnetwork.URL(project, t.Cloud.Region())
+	}
 
 	if a == nil {
 		klog.V(4).Infof("Creating ForwardingRule %q", o.Name)
 
-		_, err := t.Cloud.Compute().ForwardingRules.Insert(t.Cloud.Project(), t.Cloud.Region(), o).Do()
+		op, err := t.Cloud.Compute().ForwardingRules().Insert(t.Cloud.Project(), t.Cloud.Region(), o)
 		if err != nil {
 			return fmt.Errorf("error creating ForwardingRule %q: %v", o.Name, err)
 		}
 
+		if err := t.Cloud.WaitForOp(op); err != nil {
+			return fmt.Errorf("error creating forwarding rule: %v", err)
+		}
+
 	} else {
-		return fmt.Errorf("Cannot apply changes to ForwardingRule: %v", changes)
+		return fmt.Errorf("cannot apply changes to ForwardingRule: %v", changes)
 	}
 
 	return nil
 }
 
 type terraformForwardingRule struct {
-	Name       string             `json:"name"`
-	PortRange  string             `json:"port_range,omitempty"`
-	Target     *terraform.Literal `json:"target,omitempty"`
-	IPAddress  *terraform.Literal `json:"ip_address,omitempty"`
-	IPProtocol string             `json:"ip_protocol,omitempty"`
+	Name                string                   `cty:"name"`
+	PortRange           *string                  `cty:"port_range"`
+	Ports               []string                 `cty:"ports"`
+	Target              *terraformWriter.Literal `cty:"target"`
+	IPAddress           *terraformWriter.Literal `cty:"ip_address"`
+	IPProtocol          string                   `cty:"ip_protocol"`
+	LoadBalancingScheme *string                  `cty:"load_balancing_scheme"`
+	Network             *terraformWriter.Literal `cty:"network"`
+	Subnetwork          *terraformWriter.Literal `cty:"subnetwork"`
+	BackendService      *terraformWriter.Literal `cty:"backend_service"`
 }
 
 func (_ *ForwardingRule) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *ForwardingRule) error {
 	name := fi.StringValue(e.Name)
 
 	tf := &terraformForwardingRule{
-		Name:       name,
-		PortRange:  e.PortRange,
-		IPProtocol: e.IPProtocol,
+		Name:                name,
+		IPProtocol:          e.IPProtocol,
+		LoadBalancingScheme: e.LoadBalancingScheme,
+		Ports:               e.Ports,
+		PortRange:           e.PortRange,
 	}
 
 	if e.TargetPool != nil {
 		tf.Target = e.TargetPool.TerraformLink()
 	}
 
+	if e.Network != nil {
+		tf.Network = e.Network.TerraformLink()
+	}
+
+	if e.Subnetwork != nil {
+		tf.Subnetwork = e.Subnetwork.TerraformLink()
+	}
+
+	if e.BackendService != nil {
+		tf.BackendService = e.BackendService.TerraformAddress()
+	}
+
 	if e.IPAddress != nil {
 		tf.IPAddress = e.IPAddress.TerraformAddress()
+	} else if e.RuleIPAddress != nil {
+		tf.IPAddress = terraformWriter.LiteralFromStringValue(*e.RuleIPAddress)
 	}
 
 	return t.RenderResource("google_compute_forwarding_rule", name, tf)
 }
 
-func (e *ForwardingRule) TerraformLink() *terraform.Literal {
+func (e *ForwardingRule) TerraformLink() *terraformWriter.Literal {
 	name := fi.StringValue(e.Name)
 
-	return terraform.LiteralSelfLink("google_compute_forwarding_rule", name)
+	return terraformWriter.LiteralSelfLink("google_compute_forwarding_rule", name)
 }

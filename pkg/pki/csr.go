@@ -18,13 +18,12 @@ package pki
 
 import (
 	crypto_rand "crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"fmt"
 	"math/big"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 // BuildPKISerial produces a serial number for certs that is vanishingly unlikely to collide
@@ -45,12 +44,9 @@ func BuildPKISerial(timestamp int64) *big.Int {
 	return serial
 }
 
-func SignNewCertificate(privateKey *PrivateKey, template *x509.Certificate, signer *x509.Certificate, signerPrivateKey *PrivateKey) (*Certificate, error) {
+func signNewCertificate(privateKey *PrivateKey, template *x509.Certificate, signer *x509.Certificate, signerPrivateKey *PrivateKey) (*Certificate, error) {
 	if template.PublicKey == nil {
-		rsaPrivateKey, ok := privateKey.Key.(*rsa.PrivateKey)
-		if ok {
-			template.PublicKey = rsaPrivateKey.Public()
-		}
+		template.PublicKey = privateKey.Key.Public()
 	}
 
 	if template.PublicKey == nil {
@@ -89,21 +85,24 @@ func SignNewCertificate(privateKey *PrivateKey, template *x509.Certificate, sign
 	if template.ExtKeyUsage == nil && !template.IsCA {
 		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	}
-	//c.SignatureAlgorithm  = do we want to override?
+	// c.SignatureAlgorithm  = do we want to override?
 
 	certificateData, err := x509.CreateCertificate(crypto_rand.Reader, template, parent, template.PublicKey, signerPrivateKey.Key)
 	if err != nil {
 		return nil, fmt.Errorf("error creating certificate: %v", err)
 	}
 
-	c := &Certificate{}
-	c.PublicKey = template.PublicKey
-
 	cert, err := x509.ParseCertificate(certificateData)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing certificate: %v", err)
 	}
-	c.Certificate = cert
+
+	c := &Certificate{
+		Subject:     cert.Subject,
+		IsCA:        cert.IsCA,
+		Certificate: cert,
+		PublicKey:   cert.PublicKey,
+	}
 
 	return c, nil
 }

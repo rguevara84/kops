@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strconv"
 )
 
 func StringValue(s *string) string {
@@ -27,6 +28,17 @@ func StringValue(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// StringSliceValue takes a slice of string pointers and returns a slice of strings
+func StringSliceValue(stringSlice []*string) []string {
+	var newSlice []string
+	for _, value := range stringSlice {
+		if value != nil {
+			newSlice = append(newSlice, *value)
+		}
+	}
+	return newSlice
 }
 
 func IsNilOrEmpty(s *string) bool {
@@ -40,6 +52,15 @@ func IsNilOrEmpty(s *string) bool {
 // This is similar to aws.String, except that we use it for non-AWS values
 func String(s string) *string {
 	return &s
+}
+
+// StringSlice is a helper that builds a []*string from a slice of strings
+func StringSlice(stringSlice []string) []*string {
+	var newSlice []*string
+	for i := range stringSlice {
+		newSlice = append(newSlice, &stringSlice[i])
+	}
+	return newSlice
 }
 
 // Float32 returns a point to a float32
@@ -139,16 +160,6 @@ func DebugPrint(o interface{}) string {
 	if o == nil {
 		return "<nil>"
 	}
-	if rh, ok := o.(*ResourceHolder); ok {
-		if rh == nil {
-			// Avoid go nil vs interface problems
-			return "<nil>"
-		}
-
-		if rh.Resource == nil {
-			return fmt.Sprintf("unknown resource %q", rh.Name)
-		}
-	}
 	if resource, ok := o.(Resource); ok {
 		if resource == nil {
 			// Avoid go nil vs interface problems
@@ -201,4 +212,23 @@ func DebugAsJsonStringIndent(v interface{}) string {
 		return fmt.Sprintf("error marshaling: %v", err)
 	}
 	return string(data)
+}
+
+func ToInt64(s *string) *int64 {
+	if s == nil {
+		return nil
+	}
+	v, err := strconv.ParseInt(*s, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &v
+}
+
+func ToString(v *int64) *string {
+	if v == nil {
+		return nil
+	}
+	s := strconv.FormatInt(*v, 10)
+	return &s
 }

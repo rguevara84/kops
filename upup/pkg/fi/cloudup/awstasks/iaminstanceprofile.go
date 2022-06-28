@@ -18,23 +18,25 @@ package awstasks
 
 import (
 	"fmt"
-	"time"
 
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/awsup"
 	"k8s.io/kops/upup/pkg/fi/cloudup/cloudformation"
 	"k8s.io/kops/upup/pkg/fi/cloudup/terraform"
+	"k8s.io/kops/upup/pkg/fi/cloudup/terraformWriter"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
-//go:generate fitask -type=IAMInstanceProfile
+// +kops:fitask
 type IAMInstanceProfile struct {
 	Name      *string
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
+
+	Tags map[string]string
 
 	ID     *string
 	Shared *bool
@@ -53,7 +55,7 @@ func findIAMInstanceProfile(cloud awsup.AWSCloud, name string) (*iam.InstancePro
 
 	response, err := cloud.IAM().GetInstanceProfile(request)
 	if awsErr, ok := err.(awserr.Error); ok {
-		if awsErr.Code() == "NoSuchEntity" {
+		if awsErr.Code() == iam.ErrCodeNoSuchEntityException {
 			return nil, nil
 		}
 	}
@@ -80,6 +82,7 @@ func (e *IAMInstanceProfile) Find(c *fi.Context) (*IAMInstanceProfile, error) {
 	actual := &IAMInstanceProfile{
 		ID:   p.InstanceProfileId,
 		Name: p.InstanceProfileName,
+		Tags: mapIAMTagsToMap(p.Tags),
 	}
 
 	e.ID = actual.ID
@@ -122,37 +125,55 @@ func (_ *IAMInstanceProfile) RenderAWS(t *awsup.AWSAPITarget, a, e, changes *IAM
 			return fmt.Errorf("error creating IAMInstanceProfile: %v", err)
 		}
 
+		tagRequest := &iam.TagInstanceProfileInput{
+			InstanceProfileName: e.Name,
+			Tags:                mapToIAMTags(e.Tags),
+		}
+		_, err = t.Cloud.IAM().TagInstanceProfile(tagRequest)
+		if err != nil {
+			if awsup.AWSErrorCode(err) == awsup.AWSErrCodeInvalidAction {
+				klog.Warningf("Ignoring unsupported IAMInstanceProfile tagging %v", *a.Name)
+			} else {
+				return fmt.Errorf("error tagging IAMInstanceProfile: %v", err)
+			}
+		}
+
 		e.ID = response.InstanceProfile.InstanceProfileId
 		e.Name = response.InstanceProfile.InstanceProfileName
-
-		// IAM instance profile seems to be highly asynchronous
-		// and if we don't wait creating dependent resources fail
-		attempt := 0
-		for {
-			if attempt > 10 {
-				klog.Warningf("unable to retrieve newly-created IAM instance profile %q; timed out", *e.Name)
-				break
+	} else {
+		if changes.Tags != nil {
+			if len(a.Tags) > 0 {
+				existingTagKeys := make([]*string, 0)
+				for k := range a.Tags {
+					existingTagKeys = append(existingTagKeys, &k)
+				}
+				untagRequest := &iam.UntagInstanceProfileInput{
+					InstanceProfileName: a.Name,
+					TagKeys:             existingTagKeys,
+				}
+				_, err := t.Cloud.IAM().UntagInstanceProfile(untagRequest)
+				if err != nil {
+					return fmt.Errorf("error untagging IAMInstanceProfile: %v", err)
+				}
 			}
-
-			ip, err := findIAMInstanceProfile(t.Cloud, *e.Name)
-			if err != nil {
-				klog.Warningf("ignoring error while retrieving newly-created IAM instance profile %q: %v", *e.Name, err)
+			if len(e.Tags) > 0 {
+				tagRequest := &iam.TagInstanceProfileInput{
+					InstanceProfileName: a.Name,
+					Tags:                mapToIAMTags(e.Tags),
+				}
+				_, err := t.Cloud.IAM().TagInstanceProfile(tagRequest)
+				if err != nil {
+					if awsup.AWSErrorCode(err) == awsup.AWSErrCodeInvalidAction {
+						klog.Warningf("Ignoring unsupported IAMInstanceProfile tagging %v", *a.Name)
+					} else {
+						return fmt.Errorf("error tagging IAMInstanceProfile: %v", err)
+					}
+				}
 			}
-
-			if ip != nil {
-				// Found
-				klog.V(4).Infof("Found IAM instance profile %q", *e.Name)
-				break
-			}
-
-			// TODO: Use a real backoff algorithm
-			time.Sleep(3 * time.Second)
-			attempt++
 		}
 	}
 
-	// TODO: Should we use path as our tag?
-	return nil // No tags in IAM
+	return nil
 }
 
 func (_ *IAMInstanceProfile) RenderTerraform(t *terraform.TerraformTarget, a, e, changes *IAMInstanceProfile) error {
@@ -160,11 +181,11 @@ func (_ *IAMInstanceProfile) RenderTerraform(t *terraform.TerraformTarget, a, e,
 	return nil
 }
 
-func (e *IAMInstanceProfile) TerraformLink() *terraform.Literal {
+func (e *IAMInstanceProfile) TerraformLink() *terraformWriter.Literal {
 	if fi.BoolValue(e.Shared) {
-		return terraform.LiteralFromStringValue(fi.StringValue(e.Name))
+		return terraformWriter.LiteralFromStringValue(fi.StringValue(e.Name))
 	}
-	return terraform.LiteralProperty("aws_iam_instance_profile", *e.Name, "id")
+	return terraformWriter.LiteralProperty("aws_iam_instance_profile", *e.Name, "id")
 }
 
 func (_ *IAMInstanceProfile) RenderCloudformation(t *cloudformation.CloudformationTarget, a, e, changes *IAMInstanceProfile) error {

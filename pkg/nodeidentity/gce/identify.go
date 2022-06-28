@@ -24,10 +24,9 @@ import (
 	"strings"
 
 	"cloud.google.com/go/compute/metadata"
-	"golang.org/x/oauth2/google"
-	compute "google.golang.org/api/compute/v0.beta"
+	compute "google.golang.org/api/compute/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/nodeidentity"
 )
 
@@ -44,16 +43,11 @@ type nodeIdentifier struct {
 	project string
 }
 
-// New creates and returns a nodeidentity.Identifier for Nodes running on GCE
-func New() (nodeidentity.Identifier, error) {
+// New creates and returns a nodeidentity.LegacyIdentifier for Nodes running on GCE
+func New() (nodeidentity.LegacyIdentifier, error) {
 	ctx := context.Background()
 
-	client, err := google.DefaultClient(ctx, compute.ComputeScope)
-	if err != nil {
-		return nil, fmt.Errorf("error building google API client: %v", err)
-	}
-
-	computeService, err := compute.New(client)
+	computeService, err := compute.NewService(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error building compute API client: %v", err)
 	}
@@ -81,7 +75,7 @@ func New() (nodeidentity.Identifier, error) {
 }
 
 // IdentifyNode queries GCE for the node identity information
-func (i *nodeIdentifier) IdentifyNode(ctx context.Context, node *corev1.Node) (*nodeidentity.Info, error) {
+func (i *nodeIdentifier) IdentifyNode(ctx context.Context, node *corev1.Node) (*nodeidentity.LegacyInfo, error) {
 	providerID := node.Spec.ProviderID
 	if providerID == "" {
 		return nil, fmt.Errorf("providerID was not set for node %s", node.Name)
@@ -130,7 +124,7 @@ func (i *nodeIdentifier) IdentifyNode(ctx context.Context, node *corev1.Node) (*
 
 	// We now double check that the instance is indeed managed by the MIG
 	// this can't be spoofed without GCE API access
-	migMember, err := i.getManagedInstance(mig, instance.Id)
+	migMember, err := i.getManagedInstance(ctx, mig, instance.Id)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +143,7 @@ func (i *nodeIdentifier) IdentifyNode(ctx context.Context, node *corev1.Node) (*
 		return nil, fmt.Errorf("ig name not set on instance template %s", instanceTemplate.Name)
 	}
 
-	info := &nodeidentity.Info{}
+	info := &nodeidentity.LegacyInfo{}
 	info.InstanceGroup = igName
 	return info, nil
 }
@@ -185,29 +179,29 @@ func (i *nodeIdentifier) getMIG(zone string, migName string) (*compute.InstanceG
 }
 
 // getMIGMember queries GCE for the instance from the MIG
-func (i *nodeIdentifier) getManagedInstance(mig *compute.InstanceGroupManager, instanceID uint64) (*compute.ManagedInstance, error) {
+func (i *nodeIdentifier) getManagedInstance(ctx context.Context, mig *compute.InstanceGroupManager, instanceID uint64) (*compute.ManagedInstance, error) {
+	var matches []*compute.ManagedInstance
+
 	filter := "id=" + strconv.FormatUint(instanceID, 10)
 	zone := lastComponent(mig.Zone)
-	instances, err := i.computeService.InstanceGroupManagers.ListManagedInstances(i.project, zone, mig.Name).Filter(filter).Do()
-	if err != nil {
+	if err := i.computeService.InstanceGroupManagers.ListManagedInstances(i.project, zone, mig.Name).Filter(filter).Pages(ctx, func(page *compute.InstanceGroupManagersListManagedInstancesResponse) error {
+		// Post-filter... filters aren't implemented (b/27605549)
+		for _, instance := range page.ManagedInstances {
+			if instance.Id != instanceID {
+				continue
+			}
+			matches = append(matches, instance)
+		}
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("error fetching GCE managed instance group members for %q: %v", mig.Name, err)
 	}
 
-	// Post-filter... seeing some odd results
-	var matches []*compute.ManagedInstance
-	for _, instance := range instances.ManagedInstances {
-		if instance.Id != instanceID {
-			// Should be impossible - shows that filters are not working
-			klog.Warningf("found instances with mismatched id %v", instance.Id)
-			continue
-		}
-		matches = append(matches, instance)
-	}
 	if len(matches) == 0 {
 		return nil, fmt.Errorf("instance %v not managed by mig %s", instanceID, mig.Name)
 	}
 	if len(matches) > 1 {
-		// Should be impossible - shows that filters are not working
+		// Should be impossible - shows that filters / post-filters are not working
 		return nil, fmt.Errorf("found multiple instances with id %v managed by mig %s", instanceID, mig.Name)
 	}
 

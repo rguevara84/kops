@@ -20,16 +20,16 @@ import (
 	"fmt"
 
 	v2pools "github.com/gophercloud/gophercloud/openstack/loadbalancer/v2/pools"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/openstack"
 )
 
-//go:generate fitask -type=LBPool
+// +kops:fitask
 type LBPool struct {
 	ID           *string
 	Name         *string
-	Lifecycle    *fi.Lifecycle
+	Lifecycle    fi.Lifecycle
 	Loadbalancer *LB
 }
 
@@ -50,8 +50,7 @@ func (s *LBPool) CompareWithID() *string {
 	return s.ID
 }
 
-func NewLBPoolTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle *fi.Lifecycle, pool *v2pools.Pool, find *LBPool) (*LBPool, error) {
-
+func NewLBPoolTaskFromCloud(cloud openstack.OpenstackCloud, lifecycle fi.Lifecycle, pool *v2pools.Pool, find *LBPool) (*LBPool, error) {
 	if len(pool.Loadbalancers) > 1 {
 		return nil, fmt.Errorf("Openstack cloud pools with multiple loadbalancers not yet supported!")
 	}
@@ -133,9 +132,13 @@ func (_ *LBPool) RenderOpenstack(t *openstack.OpenstackAPITarget, a, e, changes 
 			return fmt.Errorf("failed to loadbalancer ACTIVE provisioning status %v: %v", provisioningStatus, err)
 		}
 
+		LbMethod := v2pools.LBMethodRoundRobin
+		if fi.StringValue(e.Loadbalancer.Provider) == "ovn" {
+			LbMethod = v2pools.LBMethodSourceIpPort
+		}
 		poolopts := v2pools.CreateOpts{
 			Name:           fi.StringValue(e.Name),
-			LBMethod:       v2pools.LBMethodRoundRobin,
+			LBMethod:       LbMethod,
 			Protocol:       v2pools.ProtocolTCP,
 			LoadbalancerID: fi.StringValue(e.Loadbalancer.ID),
 		}

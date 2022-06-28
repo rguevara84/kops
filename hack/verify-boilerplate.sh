@@ -14,34 +14,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-. $(dirname "${BASH_SOURCE}")/common.sh
+. "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-boiler="${KUBE_ROOT}/hack/boilerplate/boilerplate.py $@"
-
-files_need_boilerplate=( `${boiler}` )
+files_need_boilerplate=()
+while IFS='' read -r line; do files_need_boilerplate+=("$line"); done < <("${KOPS_ROOT}/hack/boilerplate/boilerplate.py" "$@")
 
 if [[ -z ${files_need_boilerplate+x} ]]; then
     exit
 fi
 
-TO_REMOVE=(${PWD}/federation/model/bindata.go ${PWD}/upup/models/bindata.go)
-TEMP_ARRAY=()
-
-for pkg in "${files_need_boilerplate[@]}"; do
-    for remove in "${TO_REMOVE[@]}"; do
-        KEEP=true
-        if [[ ${pkg} == ${remove} ]]; then
-            KEEP=false
-            break
-        fi
-    done
-    if ${KEEP}; then
-        TEMP_ARRAY+=(${pkg})
-    fi
-done
-
-if [[ ${#TEMP_ARRAY[@]} -gt 0 ]]; then
-  for file in "${TEMP_ARRAY[@]}"; do
+if [[ ${#files_need_boilerplate[@]} -gt 0 ]]; then
+  for file in "${files_need_boilerplate[@]}"; do
     echo "FAIL: Boilerplate header is wrong for: ${file}"
   done
   echo "FAIL: Please execute ./hack/update-header.sh"

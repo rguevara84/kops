@@ -17,6 +17,7 @@ limitations under the License.
 package commands
 
 import (
+	"context"
 	"fmt"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,32 +29,68 @@ import (
 )
 
 // UpdateCluster writes the updated cluster to the state store, after performing validation
-func UpdateCluster(clientset simple.Clientset, cluster *kops.Cluster, instanceGroups []*kops.InstanceGroup) error {
-	err := cloudup.PerformAssignments(cluster)
-	if err != nil {
-		return fmt.Errorf("error populating configuration: %v", err)
-	}
-
-	assetBuilder := assets.NewAssetBuilder(cluster, "")
-	fullCluster, err := cloudup.PopulateClusterSpec(clientset, cluster, assetBuilder)
+func UpdateCluster(ctx context.Context, clientset simple.Clientset, cluster *kops.Cluster, instanceGroups []*kops.InstanceGroup) error {
+	cloud, err := cloudup.BuildCloud(cluster)
 	if err != nil {
 		return err
 	}
 
-	err = validation.DeepValidate(fullCluster, instanceGroups, true)
+	err = cloudup.PerformAssignments(cluster, cloud)
+	if err != nil {
+		return fmt.Errorf("error populating configuration: %v", err)
+	}
+
+	assetBuilder := assets.NewAssetBuilder(cluster, false)
+	fullCluster, err := cloudup.PopulateClusterSpec(clientset, cluster, cloud, assetBuilder)
+	if err != nil {
+		return err
+	}
+
+	err = validation.DeepValidate(fullCluster, instanceGroups, true, nil)
 	if err != nil {
 		return err
 	}
 
 	// Retrieve the current status of the cluster.  This will eventually be part of the cluster object.
-	statusDiscovery := &CloudDiscoveryStatusStore{}
-	status, err := statusDiscovery.FindClusterStatus(cluster)
+	status, err := cloud.FindClusterStatus(cluster)
 	if err != nil {
 		return err
 	}
 
 	// Note we perform as much validation as we can, before writing a bad config
-	_, err = clientset.UpdateCluster(cluster, status)
+	_, err = clientset.UpdateCluster(ctx, cluster, status)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// UpdateInstanceGroup writes the updated instance group to the state store after performing validation
+func UpdateInstanceGroup(ctx context.Context, clientset simple.Clientset, cluster *kops.Cluster, allInstanceGroups []*kops.InstanceGroup, instanceGroupToUpdate *kops.InstanceGroup) error {
+	cloud, err := cloudup.BuildCloud(cluster)
+	if err != nil {
+		return err
+	}
+
+	err = cloudup.PerformAssignments(cluster, cloud)
+	if err != nil {
+		return fmt.Errorf("error populating configuration: %v", err)
+	}
+
+	assetBuilder := assets.NewAssetBuilder(cluster, false)
+	fullCluster, err := cloudup.PopulateClusterSpec(clientset, cluster, cloud, assetBuilder)
+	if err != nil {
+		return err
+	}
+
+	err = validation.CrossValidateInstanceGroup(instanceGroupToUpdate, fullCluster, cloud, true).ToAggregate()
+	if err != nil {
+		return err
+	}
+
+	// Validation was successful so commit the changed instance group.
+	_, err = clientset.InstanceGroupsFor(cluster).Update(ctx, instanceGroupToUpdate, metav1.UpdateOptions{})
 	if err != nil {
 		return err
 	}
@@ -62,8 +99,8 @@ func UpdateCluster(clientset simple.Clientset, cluster *kops.Cluster, instanceGr
 }
 
 // ReadAllInstanceGroups reads all the instance groups for the cluster
-func ReadAllInstanceGroups(clientset simple.Clientset, cluster *kops.Cluster) ([]*kops.InstanceGroup, error) {
-	list, err := clientset.InstanceGroupsFor(cluster).List(metav1.ListOptions{})
+func ReadAllInstanceGroups(ctx context.Context, clientset simple.Clientset, cluster *kops.Cluster) ([]*kops.InstanceGroup, error) {
+	list, err := clientset.InstanceGroupsFor(cluster).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}

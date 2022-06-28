@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -39,9 +40,11 @@ var masterZones []string
 
 var sshPublicKey = "~/.ssh/id_rsa.pub"
 
-var flagRegistryBase = flag.String("registry", os.Getenv("KOPS_STATE_STORE"), "VFS path where files are kept")
-var flagClusterName = flag.String("name", "", "Name of cluster to create")
-var flagZones = flag.String("zones", "", "Comma separated list of zones to create")
+var (
+	flagRegistryBase = flag.String("registry", os.Getenv("KOPS_STATE_STORE"), "VFS path where files are kept")
+	flagClusterName  = flag.String("name", "", "Name of cluster to create")
+	flagZones        = flag.String("zones", "", "Comma separated list of zones to create")
+)
 
 func main() {
 	flag.Parse()
@@ -52,13 +55,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = up()
+	ctx := context.TODO()
+
+	err = up(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error from up: %v\n", err)
 		os.Exit(1)
 	}
 
-	err = apply()
+	err = apply(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error from apply: %v\n", err)
 		os.Exit(1)

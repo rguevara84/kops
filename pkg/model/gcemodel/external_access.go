@@ -17,7 +17,7 @@ limitations under the License.
 package gcemodel
 
 import (
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kops/pkg/apis/kops"
 	"k8s.io/kops/upup/pkg/fi"
 	"k8s.io/kops/upup/pkg/fi/cloudup/gcetasks"
@@ -27,7 +27,7 @@ import (
 // (SSHAccess, KubernetesAPIAccess)
 type ExternalAccessModelBuilder struct {
 	*GCEModelContext
-	Lifecycle *fi.Lifecycle
+	Lifecycle fi.Lifecycle
 }
 
 var _ fi.ModelBuilder = &ExternalAccessModelBuilder{}
@@ -49,22 +49,24 @@ func (b *ExternalAccessModelBuilder) Build(c *fi.ModelBuilderContext) error {
 		// But I think we can always add more permissions in this case later, but we can't easily take them away
 		klog.V(2).Infof("bastion is in use; won't configure SSH access to master / node instances")
 	} else {
-		c.AddTask(&gcetasks.FirewallRule{
-			Name:         s(b.SafeObjectName("ssh-external-to-master")),
+		network, err := b.LinkToNetwork()
+		if err != nil {
+			return err
+		}
+		b.AddFirewallRulesTasks(c, "ssh-external-to-master", &gcetasks.FirewallRule{
 			Lifecycle:    b.Lifecycle,
 			TargetTags:   []string{b.GCETagForRole(kops.InstanceGroupRoleMaster)},
 			Allowed:      []string{"tcp:22"},
 			SourceRanges: b.Cluster.Spec.SSHAccess,
-			Network:      b.LinkToNetwork(),
+			Network:      network,
 		})
 
-		c.AddTask(&gcetasks.FirewallRule{
-			Name:         s(b.SafeObjectName("ssh-external-to-node")),
+		b.AddFirewallRulesTasks(c, "ssh-external-to-node", &gcetasks.FirewallRule{
 			Lifecycle:    b.Lifecycle,
 			TargetTags:   []string{b.GCETagForRole(kops.InstanceGroupRoleNode)},
 			Allowed:      []string{"tcp:22"},
 			SourceRanges: b.Cluster.Spec.SSHAccess,
-			Network:      b.LinkToNetwork(),
+			Network:      network,
 		})
 	}
 
@@ -74,9 +76,13 @@ func (b *ExternalAccessModelBuilder) Build(c *fi.ModelBuilderContext) error {
 		if err != nil {
 			return err
 		}
+
 		nodePortRangeString := nodePortRange.String()
-		t := &gcetasks.FirewallRule{
-			Name:       s(b.SafeObjectName("nodeport-external-to-node")),
+		network, err := b.LinkToNetwork()
+		if err != nil {
+			return err
+		}
+		b.AddFirewallRulesTasks(c, "nodeport-external-to-node", &gcetasks.FirewallRule{
 			Lifecycle:  b.Lifecycle,
 			TargetTags: []string{b.GCETagForRole(kops.InstanceGroupRoleNode)},
 			Allowed: []string{
@@ -84,14 +90,8 @@ func (b *ExternalAccessModelBuilder) Build(c *fi.ModelBuilderContext) error {
 				"udp:" + nodePortRangeString,
 			},
 			SourceRanges: b.Cluster.Spec.NodePortAccess,
-			Network:      b.LinkToNetwork(),
-		}
-		if len(t.SourceRanges) == 0 {
-			// Empty SourceRanges is interpreted as 0.0.0.0/0 if tags are empty, so we set a SourceTag
-			// This is already covered by the normal node-to-node rules, but avoids opening the NodePort range
-			t.SourceTags = []string{b.GCETagForRole(kops.InstanceGroupRoleNode)}
-		}
-		c.AddTask(t)
+			Network:      network,
+		})
 	}
 
 	if !b.UseLoadBalancerForAPI() {
@@ -100,13 +100,17 @@ func (b *ExternalAccessModelBuilder) Build(c *fi.ModelBuilderContext) error {
 		// We need to open security groups directly to the master nodes (instead of via the ELB)
 
 		// HTTPS to the master is allowed (for API access)
-		c.AddTask(&gcetasks.FirewallRule{
-			Name:         s(b.SafeObjectName("kubernetes-master-https")),
+
+		network, err := b.LinkToNetwork()
+		if err != nil {
+			return err
+		}
+		b.AddFirewallRulesTasks(c, "kubernetes-master-https", &gcetasks.FirewallRule{
 			Lifecycle:    b.Lifecycle,
 			TargetTags:   []string{b.GCETagForRole(kops.InstanceGroupRoleMaster)},
 			Allowed:      []string{"tcp:443"},
 			SourceRanges: b.Cluster.Spec.KubernetesAPIAccess,
-			Network:      b.LinkToNetwork(),
+			Network:      network,
 		})
 	}
 
