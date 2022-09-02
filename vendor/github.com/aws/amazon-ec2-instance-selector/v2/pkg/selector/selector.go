@@ -132,6 +132,9 @@ func (itf Selector) Save() error {
 
 // Filter accepts a Filters struct which is used to select the available instance types
 // matching the criteria within Filters and returns a simple list of instance type strings
+//
+// Deprecated: This function will be replaced with GetFilteredInstanceTypes() and
+// OutputInstanceTypes() in the next major version.
 func (itf Selector) Filter(filters Filters) ([]string, error) {
 	outputFn := InstanceTypesOutputFn(outputs.SimpleInstanceTypeOutput)
 	output, _, err := itf.FilterWithOutput(filters, outputFn)
@@ -140,6 +143,9 @@ func (itf Selector) Filter(filters Filters) ([]string, error) {
 
 // FilterVerbose accepts a Filters struct which is used to select the available instance types
 // matching the criteria within Filters and returns a list instanceTypeInfo
+//
+// Deprecated: This function will be replaced with GetFilteredInstanceTypes() in the next
+// major version.
 func (itf Selector) FilterVerbose(filters Filters) ([]*instancetypes.Details, error) {
 	instanceTypeInfoSlice, err := itf.rawFilter(filters)
 	if err != nil {
@@ -151,6 +157,9 @@ func (itf Selector) FilterVerbose(filters Filters) ([]*instancetypes.Details, er
 
 // FilterWithOutput accepts a Filters struct which is used to select the available instance types
 // matching the criteria within Filters and returns a list of strings based on the custom outputFn
+//
+// Deprecated: This function will be replaced with GetFilteredInstanceTypes() and
+// OutputInstanceTypes() in the next major version.
 func (itf Selector) FilterWithOutput(filters Filters, outputFn InstanceTypesOutput) ([]string, int, error) {
 	instanceTypeInfoSlice, err := itf.rawFilter(filters)
 	if err != nil {
@@ -252,7 +261,7 @@ func (itf Selector) prepareFilter(filters Filters, instanceTypeInfo instancetype
 	if itf.EC2Pricing.OnDemandCacheCount() > 0 {
 		price, err := itf.EC2Pricing.GetOnDemandInstanceTypeCost(instanceTypeName)
 		if err != nil {
-			log.Printf("Could not retrieve instantaneous hourly on-demand price for instance type %s\n", instanceTypeName)
+			log.Printf("Could not retrieve instantaneous hourly on-demand price for instance type %s - %s\n", instanceTypeName, err)
 		} else {
 			instanceTypeHourlyPriceOnDemand = &price
 			instanceTypeInfo.OndemandPricePerHour = instanceTypeHourlyPriceOnDemand
