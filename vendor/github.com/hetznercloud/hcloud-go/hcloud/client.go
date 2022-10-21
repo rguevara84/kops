@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net/http"
 	"net/http/httputil"
@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/hcloud/internal/instrumentation"
-
 	"github.com/hetznercloud/hcloud-go/hcloud/schema"
 	"github.com/prometheus/client_golang/prometheus"
+	"golang.org/x/net/http/httpguts"
 )
 
 // Endpoint is the base URL of the API.
@@ -53,6 +53,7 @@ func ExponentialBackoff(b float64, d time.Duration) BackoffFunc {
 type Client struct {
 	endpoint                string
 	token                   string
+	tokenValid              bool
 	pollInterval            time.Duration
 	backoffFunc             BackoffFunc
 	httpClient              *http.Client
@@ -80,6 +81,7 @@ type Client struct {
 	Volume           VolumeClient
 	PlacementGroup   PlacementGroupClient
 	RDNS             RDNSClient
+	PrimaryIP        PrimaryIPClient
 }
 
 // A ClientOption is used to configure a Client.
@@ -96,6 +98,7 @@ func WithEndpoint(endpoint string) ClientOption {
 func WithToken(token string) ClientOption {
 	return func(client *Client) {
 		client.token = token
+		client.tokenValid = httpguts.ValidHeaderFieldValue(token)
 	}
 }
 
@@ -150,6 +153,7 @@ func WithInstrumentation(registry *prometheus.Registry) ClientOption {
 func NewClient(options ...ClientOption) *Client {
 	client := &Client{
 		endpoint:     Endpoint,
+		tokenValid:   true,
 		httpClient:   &http.Client{},
 		backoffFunc:  ExponentialBackoff(2, 500*time.Millisecond),
 		pollInterval: 500 * time.Millisecond,
@@ -183,6 +187,7 @@ func NewClient(options ...ClientOption) *Client {
 	client.Firewall = FirewallClient{client: client}
 	client.PlacementGroup = PlacementGroupClient{client: client}
 	client.RDNS = RDNSClient{client: client}
+	client.PrimaryIP = PrimaryIPClient{client: client}
 
 	return client
 }
@@ -196,9 +201,13 @@ func (c *Client) NewRequest(ctx context.Context, method, path string, body io.Re
 		return nil, err
 	}
 	req.Header.Set("User-Agent", c.userAgent)
-	if c.token != "" {
+
+	if !c.tokenValid {
+		return nil, errors.New("Authorization token contains invalid characters")
+	} else if c.token != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.token))
 	}
+
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -212,7 +221,7 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 	var body []byte
 	var err error
 	if r.ContentLength > 0 {
-		body, err = ioutil.ReadAll(r.Body)
+		body, err = io.ReadAll(r.Body)
 		if err != nil {
 			r.Body.Close()
 			return nil, err
@@ -221,7 +230,7 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 	}
 	for {
 		if r.ContentLength > 0 {
-			r.Body = ioutil.NopCloser(bytes.NewReader(body))
+			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
 
 		if c.debugWriter != nil {
@@ -237,13 +246,13 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 			return nil, err
 		}
 		response := &Response{Response: resp}
-		body, err := ioutil.ReadAll(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			resp.Body.Close()
 			return response, err
 		}
 		resp.Body.Close()
-		resp.Body = ioutil.NopCloser(bytes.NewReader(body))
+		resp.Body = io.NopCloser(bytes.NewReader(body))
 
 		if c.debugWriter != nil {
 			dumpResp, err := httputil.DumpResponse(resp, true)
@@ -261,7 +270,7 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 			err = errorFromResponse(resp, body)
 			if err == nil {
 				err = fmt.Errorf("hcloud: server responded with status code %d", resp.StatusCode)
-			} else if isRetryable(err) {
+			} else if isConflict(err) {
 				c.backoff(retries)
 				retries++
 				continue
@@ -280,12 +289,12 @@ func (c *Client) Do(r *http.Request, v interface{}) (*Response, error) {
 	}
 }
 
-func isRetryable(error error) bool {
+func isConflict(error error) bool {
 	err, ok := error.(Error)
 	if !ok {
 		return false
 	}
-	return err.Code == ErrorCodeRateLimitExceeded || err.Code == ErrorCodeConflict
+	return err.Code == ErrorCodeConflict
 }
 
 func (c *Client) backoff(retries int) {
